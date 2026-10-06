@@ -1,6 +1,6 @@
 cask "plurium" do
-  version "154.0.8037.98-5"
-  sha256 "c511c636fa6941f4605056ea89097013e5f35b55ab5f86d8e2c4e7edc0d63b7c"
+  version "154.0.8037.98-6"
+  sha256 "43e01454f16259f4a53b18b168f9baf5d28a8331b995cbe92c3afbbc871f827d"
 
   url "https://github.com/indapublic/plurium/releases/download/v#{version}/Plurium-#{version}-arm64.dmg"
   name "Plurium"
