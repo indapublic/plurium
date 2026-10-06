@@ -1,4 +1,4 @@
-From 338313f703fec1748f1e98aa9988972300c22df1 Mon Sep 17 00:00:00 2001
+From 91e94c532c9c37c40d33f643ceab1f403aee067c Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 6 Oct 2026 13:01:22 +1000
 Subject: [PATCH 6/6] Mac: Plurium updates through Homebrew
@@ -712,7 +712,7 @@ index b65f7932b3e07..406ad95d5d71e 100644
  }
  
 diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
-index d9971e9a2e88e..5598e5b29742f 100644
+index d24ed48df718d..6787d6418f373 100644
 --- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
 +++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
 @@ -17,6 +17,7 @@
@@ -750,7 +750,7 @@ index d9971e9a2e88e..5598e5b29742f 100644
    int pressed_index_ = -1;
    int pressed_button_ = 0;  // ui::EF_*_MOUSE_BUTTON
 diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
-index 7bb5c6c6110aa..82fb63bb0be47 100644
+index 76a24e8700348..a6bfd5dff3afb 100644
 --- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
 +++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
 @@ -8,6 +8,7 @@
@@ -769,7 +769,7 @@ index 7bb5c6c6110aa..82fb63bb0be47 100644
  #include "ui/views/controls/image_view.h"
  #include "ui/views/controls/label.h"
  #include "ui/views/controls/throbber.h"
-@@ -283,6 +285,15 @@ UnifiedTabStrip::UnifiedTabStrip(UnifiedTabStripDelegate* delegate)
+@@ -286,6 +288,15 @@ UnifiedTabStrip::UnifiedTabStrip(UnifiedTabStripDelegate* delegate)
    new_tab_button_->SetTooltipText(u"New tab (right click: choose profile)");
    new_tab_button_->GetViewAccessibility().SetName(u"New tab");
    new_tab_button_->set_context_menu_controller(this);
@@ -785,7 +785,7 @@ index 7bb5c6c6110aa..82fb63bb0be47 100644
    set_context_menu_controller(this);
  }
  
-@@ -319,7 +330,9 @@ int UnifiedTabStrip::NonClientHitTest(const gfx::Point& point_in_parent) const {
+@@ -322,7 +333,9 @@ int UnifiedTabStrip::NonClientHitTest(const gfx::Point& point_in_parent) const {
    if (!GetLocalBounds().Contains(point)) {
      return HTNOWHERE;
    }
@@ -796,7 +796,7 @@ index 7bb5c6c6110aa..82fb63bb0be47 100644
      return HTCLIENT;
    }
    return HTCAPTION;
-@@ -341,8 +354,11 @@ int UnifiedTabStrip::TabWidth() const {
+@@ -344,8 +357,11 @@ int UnifiedTabStrip::TabWidth() const {
    if (!count) {
      return kTabMaxWidth;
    }
@@ -810,7 +810,7 @@ index 7bb5c6c6110aa..82fb63bb0be47 100644
    return std::clamp(available / count, kTabMinWidth, kTabMaxWidth);
  }
  
-@@ -385,6 +401,32 @@ void UnifiedTabStrip::Layout(PassKey) {
+@@ -388,6 +404,32 @@ void UnifiedTabStrip::Layout(PassKey) {
        count * tab_width + kNewTabButtonSpacing,
        kTabTopInset + (height() - kTabTopInset - kNewTabButtonSize) / 2,
        kNewTabButtonSize, kNewTabButtonSize);
