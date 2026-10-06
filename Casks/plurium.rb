@@ -9,11 +9,12 @@ cask "plurium" do
 
   livecheck do
     url :url
+    regex(/^v?(\d+(?:\.\d+)+(?:-\d+)?)$/i)
     strategy :github_latest
   end
 
   depends_on arch: :arm64
-  depends_on macos: ">= :ventura"
+  depends_on macos: :ventura
 
   app "Plurium.app"
 
