@@ -18,8 +18,18 @@ brew trust --cask indapublic/plurium/plurium   # Homebrew 7+ asks to trust third
 brew install --cask indapublic/plurium/plurium
 ```
 
-Update with `brew upgrade --cask plurium`. Remove with
-`brew uninstall --cask plurium` (add `--zap` to also delete the profiles).
+Plurium updates itself through Homebrew: when a new version is out, an
+**Update** button appears at the end of the tab strip (and *Plurium → Update
+to …* in the menu bar). It quits, runs `brew update` and
+`brew upgrade --cask plurium`, and reopens with all your tabs. The check runs a
+minute after launch and every six hours by downloading the cask file from this
+repository; *Plurium → Check for Updates…* checks right away. To turn the
+automatic checks off:
+`defaults write com.indapublic.plurium PluriumAutomaticUpdateChecks -bool NO`.
+The update log is `~/Library/Logs/Plurium/update.log`.
+
+Remove with `brew uninstall --cask plurium` (add `--zap` to also delete the
+profiles).
 
 The app is signed with a Developer ID and notarized by Apple.
 
@@ -54,7 +64,7 @@ Set each profile's color in *Customize Chromium → Color*.
 - No Chrome Sync and no signing in to the browser itself (no Google API keys).
   Signing in to websites works as usual.
 - No Widevine, so DRM video (Netflix, Spotify Web) does not play.
-- Updates come only through new releases (`brew upgrade`); every Chromium
+- Updates come only through new releases of this repository; every Chromium
   security release needs a rebuild.
 - In place of Chromium's tab strip you lose hover previews, pinned tabs and tab
   groups (still in the model, not drawn), dragging a tab out into a new
@@ -91,6 +101,7 @@ A full build takes about 9 hours on an M1 with 16 GB. The detailed guide
 | `0003` | Hide AppKit's tab bar, shared fullscreen |
 | `0004` | One tab strip with the tabs of all profiles |
 | `0005` | Plurium name, bundle id, data directory and icon |
+| `0006` | Updates through Homebrew from inside the app |
 
 Releases are made with `tools/release.sh` (Chromium's signing scripts,
 notarization, DMG, cask bump).

@@ -45,6 +45,7 @@
 | `0003-Mac-Chrome-style-profile-switcher-…` | Прячет полосу AppKit, общий fullscreen группы, защита от fullscreen при запуске |
 | `0004-Mac-one-tab-strip-with-the-tabs-of-all-profiles…` | Общая полоса вкладок всех профилей: свой порядок, перетаскивание, меню вкладки, клавиши по общему порядку, полоса в fullscreen |
 | `0005-Mac-Plurium-branding-…` | Имя Plurium, свой bundle id и папка данных, фиолетовая иконка |
+| `0006-Mac-Plurium-updates-through-Homebrew` | Обновление через Homebrew из самого приложения |
 
 Вся логика в новых файлах `chrome/browser/ui/views/frame/profile_tabs_mac.{h,mm}`
 (группа окон, общий порядок вкладок) и `unified_tab_strip_mac.{h,mm}` (сама полоса).
@@ -297,6 +298,31 @@ autoninja -C out/Release chrome chrome/installer/mac   # + скрипты под
 нотаризует и стейплит DMG. Версия релиза — версия Chromium плюс номер сборки
 (`REVISION=2` для повторного релиза на той же версии Chromium).
 
+## Обновления внутри приложения
+
+Через минуту после запуска и потом каждые 6 часов Plurium скачивает
+`Casks/plurium.rb` из `main` этого репозитория (ровно то, что поставит
+`brew upgrade`) и сравнивает версию с установленной (папка версии в
+`$(brew --prefix)/Caskroom/plurium`). Если вышла новая:
+
+- в конце полосы вкладок появляется кнопка **Update**, а в меню
+  «Plurium» пункт «Check for Updates…» превращается в «Update to <версия>…»;
+- по нажатию — подтверждение, затем Plurium сохраняет сессию (как
+  `chrome::AttemptRestart()`, с `prefs::kWasRestarted`) и закрывается;
+  отдельный скрипт ждёт выхода процесса, делает `brew update` и
+  `brew upgrade --cask indapublic/plurium/plurium` и открывает Plurium с
+  `--restore-last-session` — окна всех профилей возвращаются;
+- лог: `~/Library/Logs/Plurium/update.log`.
+
+Копия, поставленная не через brew (не из `/Applications` или без Caskroom),
+только ведёт на страницу релиза. Выключить автоматические проверки:
+`defaults write com.indapublic.plurium PluriumAutomaticUpdateChecks -bool NO`.
+Для тестов `--plurium-update-feed=<url>` подменяет адрес cask (например,
+локальный файл с более новой версией).
+
+Значит, для выпуска обновления достаточно `tools/release.sh --publish`:
+пользователи увидят кнопку в течение 6 часов.
+
 ## Известные ограничения
 
 - **Нет Chrome Sync** и входа в Google-аккаунт браузера: у сборки нет Google API
@@ -305,8 +331,9 @@ autoninja -C out/Release chrome chrome/installer/mac   # + скрипты под
 - **Нет Widevine**: Netflix, Spotify Web и другой DRM-контент не воспроизводится.
 - **Passkeys через iCloud Keychain**, скорее всего, не работают: нужны
   entitlement'ы и подпись разработчика Google.
-- **Нет автообновлений.** Каждый security-релиз означает ребейз и пересборку
-  `out/Release` (≈ 7 ч на M1). Отставать от stable надолго не стоит.
+- **Обновления только наши.** Каждый security-релиз Chromium означает ребейз,
+  пересборку `out/Release` (≈ 9,5 ч на M1) и новый релиз. Отставать от stable
+  надолго не стоит.
 - Связку ключей Chromium использует свою («Chromium Safe Storage»), при первом
   запуске macOS спросит доступ. С данными Google Chrome она не пересекается, а
   с обычным Chromium ключ общий (у него то же имя); данные при этом разные.

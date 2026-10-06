@@ -1,0 +1,731 @@
+From 7ac142fbb6e7bec062df659000ce5ea5de0ee6f7 Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Tue, 6 Oct 2026 13:01:22 +1000
+Subject: [PATCH 6/6] Mac: Plurium updates through Homebrew
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A minute after startup and then every six hours Plurium compares the
+version in its published cask (Casks/plurium.rb in indapublic/plurium,
+which is what `brew upgrade` installs) with the installed one, read from
+the Homebrew Caskroom. A newer version shows an "Update" button at the
+end of the unified tab strip and turns the "Check for Updates…" item
+after "About Plurium" into "Update to <version>…".
+
+Updating asks for confirmation, saves the session state like
+chrome::AttemptRestart(), sets prefs::kWasRestarted and quits. A
+detached script waits for the process to exit, runs `brew update` and
+`brew upgrade --cask indapublic/plurium/plurium`, and reopens the app
+with the same switches plus --restore-last-session, so every profile's
+windows come back. The log is ~/Library/Logs/Plurium/update.log.
+
+Copies not installed with Homebrew only link to the release page.
+Automatic checks can be turned off with the PluriumAutomaticUpdateChecks
+user default; --plurium-update-feed=<url> replaces the cask URL for
+testing.
+---
+ chrome/browser/ui/BUILD.gn                    |   2 +
+ .../ui/views/frame/plurium_update_mac.h       |  32 ++
+ .../ui/views/frame/plurium_update_mac.mm      | 478 ++++++++++++++++++
+ .../ui/views/frame/profile_tabs_mac.mm        |   5 +
+ .../ui/views/frame/unified_tab_strip_mac.h    |   6 +
+ .../ui/views/frame/unified_tab_strip_mac.mm   |  42 +-
+ 6 files changed, 562 insertions(+), 3 deletions(-)
+ create mode 100644 chrome/browser/ui/views/frame/plurium_update_mac.h
+ create mode 100644 chrome/browser/ui/views/frame/plurium_update_mac.mm
+
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+index 01d5d84736751..36876a0a199ef 100644
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -2330,6 +2330,8 @@ static_library("ui") {
+       "views/frame/immersive_mode_controller_mac.mm",
+       "views/frame/immersive_mode_overlay_views_mac.h",
+       "views/frame/immersive_mode_overlay_views_mac.mm",
++      "views/frame/plurium_update_mac.h",
++      "views/frame/plurium_update_mac.mm",
+       "views/frame/profile_tabs_mac.h",
+       "views/frame/profile_tabs_mac.mm",
+       "views/frame/unified_tab_strip_mac.h",
+diff --git a/chrome/browser/ui/views/frame/plurium_update_mac.h b/chrome/browser/ui/views/frame/plurium_update_mac.h
+new file mode 100644
+index 0000000000000..a910345badedd
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/plurium_update_mac.h
+@@ -0,0 +1,32 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_PLURIUM_UPDATE_MAC_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_PLURIUM_UPDATE_MAC_H_
++
++#include <string>
++
++#include "base/functional/callback_forward.h"
++
++// Updates of Plurium through Homebrew. A short while after startup and then
++// every few hours the version in the published cask is compared with the
++// installed one. A newer version is offered in the app menu and the tab strip;
++// updating quits Plurium, runs `brew upgrade --cask` and reopens it with the
++// same tabs. Builds not installed with Homebrew only point to the release
++// page.
++namespace plurium_update {
++
++// Starts the checks; later calls only replace `on_change`, which runs on the
++// UI thread whenever the available version changes.
++void Start(base::RepeatingClosure on_change);
++
++// The newer version, e.g. u"154.0.8037.99-1", or empty.
++std::u16string AvailableVersion();
++
++// Asks whether to update now and updates if confirmed.
++void PromptForUpdate();
++
++}  // namespace plurium_update
++
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_PLURIUM_UPDATE_MAC_H_
+diff --git a/chrome/browser/ui/views/frame/plurium_update_mac.mm b/chrome/browser/ui/views/frame/plurium_update_mac.mm
+new file mode 100644
+index 0000000000000..c8b93264d9eb1
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/plurium_update_mac.mm
+@@ -0,0 +1,478 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/views/frame/plurium_update_mac.h"
++
++#import <AppKit/AppKit.h>
++
++#include <algorithm>
++#include <array>
++#include <optional>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "base/apple/bundle_locations.h"
++#include "base/apple/foundation_util.h"
++#include "base/command_line.h"
++#include "base/containers/span.h"
++#include "base/files/file_enumerator.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/functional/callback.h"
++#include "base/logging.h"
++#include "base/no_destructor.h"
++#include "base/process/launch.h"
++#include "base/process/process_handle.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/string_split.h"
++#include "base/strings/sys_string_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "base/task/thread_pool.h"
++#include "base/time/time.h"
++#include "base/timer/timer.h"
++#include "chrome/app/chrome_command_ids.h"
++#include "chrome/browser/browser_process.h"
++#include "chrome/browser/lifetime/application_lifetime.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
++#include "chrome/common/chrome_switches.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
++
++namespace plurium_update {
++namespace {
++
++// The cask is the source of truth: it is what `brew upgrade` installs.
++constexpr char kCaskUrl[] =
++    "https://raw.githubusercontent.com/indapublic/plurium/main/Casks/"
++    "plurium.rb";
++constexpr char kReleasesUrl[] =
++    "https://github.com/indapublic/plurium/releases/latest";
++constexpr char kCask[] = "indapublic/plurium/plurium";
++constexpr char kCaskToken[] = "plurium";
++// Overrides kCaskUrl, for testing.
++constexpr char kFeedSwitch[] = "plurium-update-feed";
++// Set to NO with `defaults write com.indapublic.plurium <key> -bool NO` to
++// turn off the automatic checks ("Check for Updates…" keeps working).
++NSString* const kAutomaticChecksKey = @"PluriumAutomaticUpdateChecks";
++
++constexpr base::TimeDelta kFirstCheckDelay = base::Minutes(1);
++constexpr base::TimeDelta kCheckInterval = base::Hours(6);
++
++// Runs detached: waits for Plurium to quit, upgrades it and reopens it.
++// Arguments: pid, brew, cask, app bundle, log file, then the relaunch
++// switches. `brew update` first: `brew upgrade` refreshes taps only daily.
++constexpr char kUpdateScript[] = R"sh(pid=$1 brew=$2 cask=$3 app=$4 log=$5
++shift 5
++mkdir -p "$(dirname "$log")"
++while kill -0 "$pid" 2>/dev/null; do sleep 0.5; done
++{
++  echo "=== $(date)"
++  export HOMEBREW_NO_ENV_HINTS=1
++  "$brew" update --quiet
++  "$brew" upgrade --cask "$cask"
++  echo "brew upgrade exit code: $?"
++} >> "$log" 2>&1
++open -a "$app" --args "$@"
++)sh";
++
++using Version = std::vector<int>;
++
++// "154.0.8037.98-1" (or with a leading "v") -> {154, 0, 8037, 98, 1}.
++Version ParseVersion(std::string_view text) {
++  if (text.starts_with('v')) {
++    text.remove_prefix(1);
++  }
++  Version version;
++  for (std::string_view part : base::SplitStringPiece(
++           text, ".-", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
++    int number = 0;
++    if (!base::StringToInt(part, &number)) {
++      return {};
++    }
++    version.push_back(number);
++  }
++  return version;
++}
++
++std::string VersionString(const Version& version) {
++  std::string text;
++  for (size_t i = 0; i < version.size(); ++i) {
++    if (i) {
++      text += i == 4 ? "-" : ".";
++    }
++    text += base::NumberToString(version[i]);
++  }
++  return text;
++}
++
++// The `version "..."` line of a cask.
++Version CaskVersion(std::string_view cask) {
++  constexpr std::string_view kKey = "version \"";
++  const size_t start = cask.find(kKey);
++  if (start == std::string_view::npos) {
++    return {};
++  }
++  const size_t begin = start + kKey.size();
++  const size_t end = cask.find('"', begin);
++  return end == std::string_view::npos
++             ? Version()
++             : ParseVersion(cask.substr(begin, end - begin));
++}
++
++// The Homebrew installation the running app belongs to.
++struct BrewInstall {
++  base::FilePath brew;
++  Version version;
++};
++
++// Blocking: looks at the Caskroom and where the app runs from.
++std::optional<BrewInstall> FindBrewInstall(base::FilePath bundle) {
++  const base::FilePath home = base::GetHomeDir();
++  if (bundle != base::FilePath("/Applications/Plurium.app") &&
++      bundle != home.Append("Applications/Plurium.app")) {
++    return std::nullopt;
++  }
++  for (const char* prefix : {"/opt/homebrew", "/usr/local"}) {
++    const base::FilePath brew = base::FilePath(prefix).Append("bin/brew");
++    const base::FilePath caskroom =
++        base::FilePath(prefix).Append("Caskroom").Append(kCaskToken);
++    if (!base::PathExists(brew) || !base::DirectoryExists(caskroom)) {
++      continue;
++    }
++    BrewInstall install{brew, {}};
++    base::FileEnumerator versions(caskroom, /*recursive=*/false,
++                                  base::FileEnumerator::DIRECTORIES);
++    for (base::FilePath dir = versions.Next(); !dir.empty();
++         dir = versions.Next()) {
++      install.version =
++          std::max(install.version, ParseVersion(dir.BaseName().value()));
++    }
++    if (!install.version.empty()) {
++      return install;
++    }
++  }
++  return std::nullopt;
++}
++
++Version RunningVersion() {
++  NSString* version = [base::apple::OuterBundle()
++      objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
++  return ParseVersion(base::SysNSStringToUTF8(version ?: @""));
++}
++
++NSWindow* AlertWindow() {
++  NSWindow* window = NSApp.keyWindow ?: NSApp.mainWindow;
++  while (window.parentWindow) {
++    window = window.parentWindow;
++  }
++  return window;
++}
++
++void ShowAlert(NSAlert* alert, void (^handler)(NSModalResponse)) {
++  if (NSWindow* window = AlertWindow()) {
++    [alert beginSheetModalForWindow:window completionHandler:handler];
++  } else {
++    handler([alert runModal]);
++  }
++}
++
++}  // namespace
++}  // namespace plurium_update
++
++// Target of the app menu item.
++@interface PluriumUpdateMenuTarget : NSObject
++- (void)checkForUpdates:(id)sender;
++@end
++
++namespace plurium_update {
++namespace {
++
++class Updater {
++ public:
++  Updater() = default;
++
++  void Start(base::RepeatingClosure on_change) {
++    on_change_ = std::move(on_change);
++    if (started_) {
++      return;
++    }
++    started_ = true;
++    UpdateMenuItem();
++    if (AutomaticChecksEnabled()) {
++      const bool testing =
++          base::CommandLine::ForCurrentProcess()->HasSwitch(kFeedSwitch);
++      first_check_.Start(FROM_HERE,
++                         testing ? base::Seconds(3) : kFirstCheckDelay,
++                         base::BindOnce(&Updater::Check, base::Unretained(this),
++                                        /*user_initiated=*/false));
++      periodic_checks_.Start(
++          FROM_HERE, kCheckInterval,
++          base::BindRepeating(&Updater::Check, base::Unretained(this),
++                              /*user_initiated=*/false));
++    }
++  }
++
++  const Version& available() const { return available_; }
++
++  void Check(bool user_initiated) {
++    if (checking_) {
++      return;
++    }
++    checking_ = true;
++    base::ThreadPool::PostTaskAndReplyWithResult(
++        FROM_HERE, {base::MayBlock()},
++        base::BindOnce(&FindBrewInstall, base::apple::OuterBundlePath()),
++        base::BindOnce(&Updater::OnInstallFound, base::Unretained(this),
++                       user_initiated));
++  }
++
++  void PromptForUpdate() {
++    if (available_.empty()) {
++      Check(/*user_initiated=*/true);
++      return;
++    }
++    const std::string version = VersionString(available_);
++    NSAlert* alert = [[NSAlert alloc] init];
++    alert.messageText = base::SysUTF8ToNSString(
++        "Plurium " + version + " is available");
++    if (install_) {
++      alert.informativeText =
++          @"Plurium will quit, update with Homebrew and reopen with all your "
++          @"tabs. It takes about a minute.";
++      [alert addButtonWithTitle:@"Update and Relaunch"];
++    } else {
++      alert.informativeText =
++          @"This copy of Plurium was not installed with Homebrew. Download the "
++          @"new version from the release page, or install it with: brew "
++          @"install --cask indapublic/plurium/plurium";
++      [alert addButtonWithTitle:@"Open Release Page"];
++    }
++    [alert addButtonWithTitle:@"Later"];
++    ShowAlert(alert, ^(NSModalResponse response) {
++      if (response != NSAlertFirstButtonReturn) {
++        return;
++      }
++      if (install_) {
++        ApplyUpdate();
++      } else {
++        [NSWorkspace.sharedWorkspace
++            openURL:[NSURL URLWithString:@(kReleasesUrl)]];
++      }
++    });
++  }
++
++  void OnCheckMenuItem() {
++    if (available_.empty()) {
++      Check(/*user_initiated=*/true);
++    } else {
++      PromptForUpdate();
++    }
++  }
++
++ private:
++  static bool AutomaticChecksEnabled() {
++    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
++    return [defaults objectForKey:kAutomaticChecksKey] == nil ||
++           [defaults boolForKey:kAutomaticChecksKey];
++  }
++
++  void OnInstallFound(bool user_initiated,
++                      std::optional<BrewInstall> install) {
++    install_ = std::move(install);
++    const base::CommandLine& command_line =
++        *base::CommandLine::ForCurrentProcess();
++    std::string url = command_line.GetSwitchValueASCII(kFeedSwitch);
++    if (url.empty()) {
++      url = kCaskUrl;
++    }
++    NSURLSession* session = [NSURLSession
++        sessionWithConfiguration:NSURLSessionConfiguration
++                                     .ephemeralSessionConfiguration];
++    scoped_refptr<base::SequencedTaskRunner> ui_task_runner =
++        base::SequencedTaskRunner::GetCurrentDefault();
++    NSURLSessionDataTask* task = [session
++          dataTaskWithURL:[NSURL URLWithString:base::SysUTF8ToNSString(url)]
++        completionHandler:^(NSData* data, NSURLResponse* response,
++                            NSError* error) {
++          const NSInteger status =
++              [response isKindOfClass:[NSHTTPURLResponse class]]
++                  ? static_cast<NSHTTPURLResponse*>(response).statusCode
++                  : 0;
++          std::string body;
++          if (!error && status == 200 && data) {
++            const base::span<const uint8_t> bytes =
++                base::apple::NSDataToSpan(data);
++            body.assign(bytes.begin(), bytes.end());
++          }
++          ui_task_runner->PostTask(
++              FROM_HERE,
++              base::BindOnce(&Updater::OnCaskFetched, base::Unretained(this),
++                             user_initiated, std::move(body)));
++        }];
++    [task resume];
++    [session finishTasksAndInvalidate];
++  }
++
++  void OnCaskFetched(bool user_initiated, std::string cask) {
++    checking_ = false;
++    const Version latest = CaskVersion(cask);
++    // The installed version knows its release number; the app only knows
++    // the Chromium version.
++    const Version current = install_ ? install_->version : RunningVersion();
++    VLOG(1) << "plurium update: latest " << VersionString(latest)
++            << ", installed " << VersionString(current)
++            << (install_ ? " (Homebrew)" : " (not Homebrew)");
++    if (latest.empty()) {
++      if (user_initiated) {
++        NSAlert* alert = [[NSAlert alloc] init];
++        alert.messageText = @"Could not check for updates";
++        alert.informativeText = @"Check the connection and try again.";
++        ShowAlert(alert, ^(NSModalResponse) {
++        });
++      }
++      return;
++    }
++    const Version available = latest > current ? latest : Version();
++    if (available != available_) {
++      available_ = available;
++      UpdateMenuItem();
++      if (on_change_) {
++        on_change_.Run();
++      }
++    }
++    if (!user_initiated) {
++      return;
++    }
++    if (available_.empty()) {
++      NSAlert* alert = [[NSAlert alloc] init];
++      alert.messageText = @"Plurium is up to date";
++      alert.informativeText = base::SysUTF8ToNSString(
++          "Version " + VersionString(current) + " is the latest.");
++      ShowAlert(alert, ^(NSModalResponse) {
++      });
++    } else {
++      PromptForUpdate();
++    }
++  }
++
++  // Quits, and the detached script updates and reopens Plurium, restoring
++  // every profile's windows like chrome::AttemptRestart() does.
++  void ApplyUpdate() {
++    if (!install_) {
++      return;
++    }
++    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
++        [](BrowserWindowInterface* browser) {
++          browser->GetProfile()->SaveSessionState();
++          return true;
++        });
++    g_browser_process->local_state()->SetBoolean(prefs::kWasRestarted, true);
++
++    const base::FilePath log = base::GetHomeDir().Append(
++        "Library/Logs/Plurium/update.log");
++    std::vector<std::string> argv = {
++        "/bin/sh",
++        "-c",
++        kUpdateScript,
++        "plurium-update",
++        base::NumberToString(base::GetCurrentProcId()),
++        install_->brew.value(),
++        kCask,
++        base::apple::OuterBundlePath().value(),
++        log.value()};
++    for (const auto& [name, value] :
++         base::CommandLine::ForCurrentProcess()->GetSwitches()) {
++      if (name.starts_with("psn") || name == switches::kRestoreLastSession) {
++        continue;
++      }
++      argv.push_back("--" + name + (value.empty() ? "" : "=" + value));
++    }
++    argv.push_back(std::string("--") + switches::kRestoreLastSession);
++
++    base::LaunchOptions options;
++    options.new_process_group = true;
++    options.disclaim_responsibility = true;
++    if (!base::LaunchProcess(argv, options).IsValid()) {
++      LOG(ERROR) << "plurium update: could not start the update script";
++      return;
++    }
++    VLOG(1) << "plurium update: quitting to update to "
++            << VersionString(available_);
++    chrome::AttemptExit();
++  }
++
++  // "Check for Updates…" after "About Plurium" in the app menu, or the
++  // update when there is one.
++  void UpdateMenuItem() {
++    NSMenu* app_menu = NSApp.mainMenu.itemArray.firstObject.submenu;
++    if (!app_menu) {
++      return;
++    }
++    if (!menu_target_) {
++      menu_target_ = [[PluriumUpdateMenuTarget alloc] init];
++    }
++    NSMenuItem* item = nil;
++    for (NSMenuItem* candidate in app_menu.itemArray) {
++      if (candidate.target == menu_target_) {
++        item = candidate;
++      }
++    }
++    if (!item) {
++      item = [[NSMenuItem alloc] initWithTitle:@""
++                                        action:@selector(checkForUpdates:)
++                                 keyEquivalent:@""];
++      item.target = menu_target_;
++      const NSInteger about = [app_menu indexOfItemWithTag:IDC_ABOUT];
++      [app_menu insertItem:item atIndex:about >= 0 ? about + 1 : 0];
++    }
++    item.title =
++        available_.empty()
++            ? @"Check for Updates…"
++            : base::SysUTF8ToNSString("Update to " +
++                                      VersionString(available_) + "…");
++  }
++
++  bool started_ = false;
++  bool checking_ = false;
++  base::RepeatingClosure on_change_;
++  base::OneShotTimer first_check_;
++  base::RepeatingTimer periodic_checks_;
++  std::optional<BrewInstall> install_;
++  Version available_;
++  PluriumUpdateMenuTarget* __strong menu_target_ = nil;
++};
++
++Updater& GetUpdater() {
++  static base::NoDestructor<Updater> updater;
++  return *updater;
++}
++
++}  // namespace
++
++void Start(base::RepeatingClosure on_change) {
++  GetUpdater().Start(std::move(on_change));
++}
++
++std::u16string AvailableVersion() {
++  const Version& available = GetUpdater().available();
++  return available.empty() ? std::u16string()
++                           : base::UTF8ToUTF16(VersionString(available));
++}
++
++void PromptForUpdate() {
++  GetUpdater().PromptForUpdate();
++}
++
++}  // namespace plurium_update
++
++@implementation PluriumUpdateMenuTarget
++- (void)checkForUpdates:(id)sender {
++  plurium_update::GetUpdater().OnCheckMenuItem();
++}
++@end
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index 332ee7c3e7190..d4748b2ccbcf3 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -54,6 +54,7 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/frame/plurium_update_mac.h"
+ #include "chrome/browser/ui/views/frame/unified_tab_strip_mac.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
+ #include "chrome/common/chrome_paths.h"
+@@ -507,6 +508,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       tabs.push_back(std::move(data));
+     }
+     strip_->SetTabs(tabs);
++    strip_->SetUpdateVersion(plurium_update::AvailableVersion());
+   }
+ 
+   // views::WidgetObserver:
+@@ -648,6 +650,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+     RunMenu(screen_point);
+   }
+ 
++  void UpdateButtonPressed() override { plurium_update::PromptForUpdate(); }
++
+   void ShowNewTabMenu(const gfx::Point& screen_point) override {
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+     menu_windows_.clear();
+@@ -1445,6 +1449,7 @@ void ObserveBrowserWidget(views::Widget* widget, BrowserView* browser_view) {
+     return;
+   }
+   EnsureWindowNotifications();
++  plurium_update::Start(base::BindRepeating(&PostUpdateAllStrips));
+   new ProfileTabsWindow(widget, browser_view);  // Owns itself.
+ }
+ 
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+index d9971e9a2e88e..5598e5b29742f 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+@@ -17,6 +17,7 @@
+ 
+ namespace views {
+ class ImageButton;
++class MdTextButton;
+ }
+ 
+ namespace profile_tabs {
+@@ -50,6 +51,7 @@ class UnifiedTabStripDelegate {
+   virtual void NewTab() = 0;
+   virtual void ShowTabMenu(int index, const gfx::Point& screen_point) = 0;
+   virtual void ShowNewTabMenu(const gfx::Point& screen_point) = 0;
++  virtual void UpdateButtonPressed() = 0;
+ 
+  protected:
+   virtual ~UnifiedTabStripDelegate() = default;
+@@ -70,6 +72,8 @@ class UnifiedTabStrip : public views::View,
+   ~UnifiedTabStrip() override;
+ 
+   void SetTabs(const std::vector<UnifiedTabData>& tabs);
++  // Shows an "Update" button at the end of the strip while `version` is set.
++  void SetUpdateVersion(const std::u16string& version);
+ 
+   // HTCLIENT over a tab or the new tab button, HTCAPTION over empty strip
+   // space (so it drags the window), HTNOWHERE outside the strip.
+@@ -101,6 +105,8 @@ class UnifiedTabStrip : public views::View,
+   const raw_ptr<UnifiedTabStripDelegate> delegate_;
+   std::vector<raw_ptr<UnifiedTabView>> tabs_;
+   raw_ptr<views::ImageButton> new_tab_button_ = nullptr;
++  raw_ptr<views::MdTextButton> update_button_ = nullptr;
++  std::u16string update_version_;
+ 
+   int pressed_index_ = -1;
+   int pressed_button_ = 0;  // ui::EF_*_MOUSE_BUTTON
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+index 7bb5c6c6110aa..4208799ee65d5 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+@@ -24,6 +24,7 @@
+ #include "ui/gfx/text_constants.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/controls/button/image_button.h"
++#include "ui/views/controls/button/md_text_button.h"
+ #include "ui/views/controls/image_view.h"
+ #include "ui/views/controls/label.h"
+ #include "ui/views/controls/throbber.h"
+@@ -283,6 +284,15 @@ UnifiedTabStrip::UnifiedTabStrip(UnifiedTabStripDelegate* delegate)
+   new_tab_button_->SetTooltipText(u"New tab (right click: choose profile)");
+   new_tab_button_->GetViewAccessibility().SetName(u"New tab");
+   new_tab_button_->set_context_menu_controller(this);
++  update_button_ = AddChildView(std::make_unique<views::MdTextButton>(
++      base::BindRepeating(
++          [](UnifiedTabStrip* strip) {
++            strip->delegate_->UpdateButtonPressed();
++          },
++          base::Unretained(this)),
++      u"Update"));
++  update_button_->SetStyle(ui::ButtonStyle::kProminent);
++  update_button_->SetVisible(false);
+   set_context_menu_controller(this);
+ }
+ 
+@@ -319,7 +329,9 @@ int UnifiedTabStrip::NonClientHitTest(const gfx::Point& point_in_parent) const {
+   if (!GetLocalBounds().Contains(point)) {
+     return HTNOWHERE;
+   }
+-  if (TabIndexAt(point) >= 0 || new_tab_button_->bounds().Contains(point)) {
++  if (TabIndexAt(point) >= 0 || new_tab_button_->bounds().Contains(point) ||
++      (update_button_->GetVisible() &&
++       update_button_->bounds().Contains(point))) {
+     return HTCLIENT;
+   }
+   return HTCAPTION;
+@@ -341,8 +353,11 @@ int UnifiedTabStrip::TabWidth() const {
+   if (!count) {
+     return kTabMaxWidth;
+   }
+-  const int available =
+-      width() - kNewTabButtonSize - 2 * kNewTabButtonSpacing;
++  int available = width() - kNewTabButtonSize - 2 * kNewTabButtonSpacing;
++  if (update_button_->GetVisible()) {
++    available -=
++        update_button_->GetPreferredSize().width() + kNewTabButtonSpacing;
++  }
+   return std::clamp(available / count, kTabMinWidth, kTabMaxWidth);
+ }
+ 
+@@ -385,6 +400,27 @@ void UnifiedTabStrip::Layout(PassKey) {
+       count * tab_width + kNewTabButtonSpacing,
+       kTabTopInset + (height() - kTabTopInset - kNewTabButtonSize) / 2,
+       kNewTabButtonSize, kNewTabButtonSize);
++  if (update_button_->GetVisible()) {
++    const gfx::Size size = update_button_->GetPreferredSize();
++    const int button_height =
++        std::min(size.height(), height() - kTabTopInset - 4);
++    update_button_->SetBounds(
++        width() - size.width() - kNewTabButtonSpacing,
++        kTabTopInset + (height() - kTabTopInset - button_height) / 2,
++        size.width(), button_height);
++  }
++}
++
++void UnifiedTabStrip::SetUpdateVersion(const std::u16string& version) {
++  if (version == update_version_) {
++    return;
++  }
++  update_version_ = version;
++  update_button_->SetVisible(!version.empty());
++  update_button_->SetTooltipText(
++      u"Plurium " + version + u" is available. Update and relaunch.");
++  DeprecatedLayoutImmediately();
++  SchedulePaint();
+ }
+ 
+ bool UnifiedTabStrip::OnMousePressed(const ui::MouseEvent& event) {
+-- 
+2.56.0
+

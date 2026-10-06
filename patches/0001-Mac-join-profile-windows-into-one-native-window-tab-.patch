@@ -1,7 +1,7 @@
 From 89d6b60440cd977747f3ea9387e7d3c1c1c0cc3a Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 07:44:30 +1000
-Subject: [PATCH 1/5] Mac: join profile windows into one native window tab
+Subject: [PATCH 1/6] Mac: join profile windows into one native window tab
  group
 
 Normal browser windows of all profiles (incognito included) are added to
