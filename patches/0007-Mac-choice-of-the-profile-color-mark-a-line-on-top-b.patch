@@ -1,0 +1,383 @@
+From 6a0c9e3c1940c28dd50adb9f972e8b26db0a4c6a Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Tue, 6 Oct 2026 18:41:58 +1000
+Subject: [PATCH 7/7] Mac: choice of the profile color mark, a line on top by
+ default
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The mark that shows a tab's profile color in the unified tab strip is
+now chosen in the tab and strip context menus (Profile Color ▸): a line
+along the top (the default), the corner triangle, a line below, a bar
+on the side, a corner outline, or none. The choice applies to all
+windows and is kept in the <bundle id>.profile-tabs defaults
+(ProfileMarkStyle).
+
+All marks are clipped to the shape of the active tab's background, so
+they follow its rounded top corners. Marks at the leading edge replace
+the separator in front of the tab; the lines keep it.
+---
+ .../ui/views/frame/profile_tabs_mac.mm        |  63 ++++++++++
+ .../ui/views/frame/unified_tab_strip_mac.h    |  22 +++-
+ .../ui/views/frame/unified_tab_strip_mac.mm   | 114 ++++++++++++++----
+ 3 files changed, 175 insertions(+), 24 deletions(-)
+
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index 406ad95d5d71e..e168eab511b28 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -134,11 +134,30 @@ enum MenuCommand {
+   kCloseCommand,
+   kCloseOthersCommand,
+   kMoveToSubmenuCommand,
++  kMarkStyleSubmenuCommand,
+   // + index into the menu's window list.
+   kMoveToWindowCommand = 100,
+   kNewTabInWindowCommand = 200,
++  // + ProfileMarkStyle.
++  kMarkStyleCommand = 300,
+ };
+ 
++// The profile color mark of the unified tab strip, for all windows.
++NSString* const kMarkStyleKey = @"ProfileMarkStyle";
++
++struct MarkStyleChoice {
++  ProfileMarkStyle style;
++  const char16_t* label;
++};
++constexpr std::array<MarkStyleChoice, 6> kMarkStyleChoices = {{
++    {ProfileMarkStyle::kTopLine, u"Line on Top"},
++    {ProfileMarkStyle::kTriangle, u"Corner Triangle"},
++    {ProfileMarkStyle::kBottomLine, u"Line Below"},
++    {ProfileMarkStyle::kSideBar, u"Bar on the Side"},
++    {ProfileMarkStyle::kCorner, u"Corner Outline"},
++    {ProfileMarkStyle::kNone, u"None"},
++}};
++
+ class ProfileTabsWindow;
+ 
+ std::vector<ProfileTabsWindow*>& AllWindows() {
+@@ -298,6 +317,15 @@ struct SavedTabOrder {
+   base::TimeTicks valid_until;
+ };
+ 
++ProfileMarkStyle CurrentMarkStyle() {
++  NSNumber* value = [ProfileTabsDefaults() objectForKey:kMarkStyleKey];
++  if (![value isKindOfClass:[NSNumber class]] || value.intValue < 0 ||
++      value.intValue > static_cast<int>(ProfileMarkStyle::kMaxValue)) {
++    return ProfileMarkStyle::kTopLine;
++  }
++  return static_cast<ProfileMarkStyle>(value.intValue);
++}
++
+ NSString* TabOrderPrefsKey() {
+   base::FilePath user_data_dir;
+   base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
+@@ -509,6 +537,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       data.muted = contents->IsAudioMuted();
+       tabs.push_back(std::move(data));
+     }
++    strip_->SetMarkStyle(CurrentMarkStyle());
+     strip_->SetTabs(tabs);
+     strip_->SetUpdateVersion(plurium_update::AvailableVersion());
+   }
+@@ -646,6 +675,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+                               submenu_model_.get());
+     }
+     menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++    AddMarkStyleSubmenu();
++    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+     menu_model_->AddItem(kCloseCommand, u"Close tab");
+     menu_model_->AddItem(kCloseOthersCommand,
+                          u"Close other tabs of " + menu_tab_.window->title());
+@@ -654,6 +685,24 @@ class ProfileTabsWindow : public views::WidgetObserver,
+ 
+   void UpdateButtonPressed() override { plurium_update::PromptForUpdate(); }
+ 
++  void ShowStripMenu(const gfx::Point& screen_point) override {
++    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    AddMarkStyleSubmenu();
++    RunMenu(screen_point);
++  }
++
++  // "Profile Color ▸" with the mark styles.
++  void AddMarkStyleSubmenu() {
++    mark_style_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    for (const MarkStyleChoice& choice : kMarkStyleChoices) {
++      mark_style_menu_model_->AddRadioItem(
++          kMarkStyleCommand + static_cast<int>(choice.style), choice.label,
++          /*group_id=*/0);
++    }
++    menu_model_->AddSubMenu(kMarkStyleSubmenuCommand, u"Profile Color",
++                            mark_style_menu_model_.get());
++  }
++
+   void ShowNewTabMenu(const gfx::Point& screen_point) override {
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+     menu_windows_.clear();
+@@ -667,7 +716,20 @@ class ProfileTabsWindow : public views::WidgetObserver,
+   }
+ 
+   // ui::SimpleMenuModel::Delegate:
++  bool IsCommandIdChecked(int command_id) const override {
++    return command_id ==
++           kMarkStyleCommand + static_cast<int>(CurrentMarkStyle());
++  }
++
+   void ExecuteCommand(int command_id, int event_flags) override {
++    if (command_id >= kMarkStyleCommand) {
++      const int style = command_id - kMarkStyleCommand;
++      if (style <= static_cast<int>(ProfileMarkStyle::kMaxValue)) {
++        [ProfileTabsDefaults() setInteger:style forKey:kMarkStyleKey];
++        PostUpdateAllStrips();
++      }
++      return;
++    }
+     if (command_id >= kNewTabInWindowCommand) {
+       if (ProfileTabsWindow* target =
+               MenuWindow(command_id - kNewTabInWindowCommand)) {
+@@ -1006,6 +1068,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+   std::vector<raw_ptr<ProfileTabsWindow>> menu_windows_;
+   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+   std::unique_ptr<ui::SimpleMenuModel> submenu_model_;
++  std::unique_ptr<ui::SimpleMenuModel> mark_style_menu_model_;
+   std::unique_ptr<views::MenuRunner> menu_runner_;
+ 
+   base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+index e6371fe5aad8d..9df64de20f16a 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+@@ -24,12 +24,23 @@ namespace profile_tabs {
+ 
+ class UnifiedTabView;
+ 
++// How a tab shows its profile's color. Stored as a number: append only.
++enum class ProfileMarkStyle {
++  kTriangle = 0,    // Filled top-left corner.
++  kTopLine = 1,     // Along the top edge (the default).
++  kBottomLine = 2,  // Along the bottom edge.
++  kSideBar = 3,     // Short bar at the leading edge.
++  kCorner = 4,      // Bracket along the top-left corner.
++  kNone = 5,
++  kMaxValue = kNone,
++};
++
+ // What the unified tab strip shows for one tab.
+ struct UnifiedTabData {
+   std::u16string title;
+   std::u16string tooltip;
+   ui::ImageModel favicon;
+-  // The tab's profile color, shown along the tab's top-left corner.
++  // The tab's profile color, shown as the strip's ProfileMarkStyle says.
+   SkColor profile_color = SK_ColorTRANSPARENT;
+   // The active tab of the window showing the strip.
+   bool selected = false;
+@@ -51,6 +62,8 @@ class UnifiedTabStripDelegate {
+   virtual void NewTab() = 0;
+   virtual void ShowTabMenu(int index, const gfx::Point& screen_point) = 0;
+   virtual void ShowNewTabMenu(const gfx::Point& screen_point) = 0;
++  // Right click on empty strip space.
++  virtual void ShowStripMenu(const gfx::Point& screen_point) = 0;
+   virtual void UpdateButtonPressed() = 0;
+ 
+  protected:
+@@ -58,8 +71,8 @@ class UnifiedTabStripDelegate {
+ };
+ 
+ // Tab strip with the tabs of all profiles in one order, all drawn the same
+-// way whichever profile they belong to; each tab's top-left corner shows
+-// its profile's color. Click activates, the close button or a middle
++// way whichever profile they belong to; a mark on each tab (by default a
++// line along its top) shows its profile's color. Click activates, the close button or a middle
+ // click closes, dragging reorders, right click opens the delegate's menus.
+ class UnifiedTabStrip : public views::View,
+                         public views::ContextMenuController {
+@@ -74,6 +87,8 @@ class UnifiedTabStrip : public views::View,
+   void SetTabs(const std::vector<UnifiedTabData>& tabs);
+   // Shows an "Update" button at the end of the strip while `version` is set.
+   void SetUpdateVersion(const std::u16string& version);
++  void SetMarkStyle(ProfileMarkStyle style);
++  ProfileMarkStyle mark_style() const { return mark_style_; }
+ 
+   // HTCLIENT over a tab or the new tab button, HTCAPTION over empty strip
+   // space (so it drags the window), HTNOWHERE outside the strip.
+@@ -107,6 +122,7 @@ class UnifiedTabStrip : public views::View,
+   raw_ptr<views::ImageButton> new_tab_button_ = nullptr;
+   raw_ptr<views::MdTextButton> update_button_ = nullptr;
+   std::u16string update_version_;
++  ProfileMarkStyle mark_style_ = ProfileMarkStyle::kTopLine;
+ 
+   int pressed_index_ = -1;
+   int pressed_button_ = 0;  // ui::EF_*_MOUSE_BUTTON
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+index 22ddd387a182d..4691600f8e00e 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+@@ -51,8 +51,14 @@ constexpr int kIconSize = 16;
+ constexpr int kIconTitleSpacing = 8;
+ constexpr int kCloseButtonSize = 20;
+ constexpr int kCornerRadius = 8;
+-// The profile color mark: a triangle filling the tab's top-left corner.
+-constexpr float kProfileMarkSize = 14;
++// Profile color marks (see ProfileMarkStyle).
++constexpr float kMarkTriangleSize = 14;
++constexpr float kMarkLineWidth = 3;
++constexpr float kMarkLineInset = 5;
++constexpr float kMarkBottomInset = 4;
++constexpr float kMarkSideInset = 4;
++constexpr float kMarkSideHeight = 16;
++constexpr float kMarkCornerLength = 14;
+ constexpr int kHoverBottomInset = 4;
+ constexpr int kSeparatorHeight = 16;
+ constexpr int kNewTabButtonSize = 28;
+@@ -197,23 +203,7 @@ class UnifiedTabView : public views::View {
+     }
+ 
+     if (SkColorGetA(data_.profile_color)) {
+-      // Clipped to the rounded corner of the active tab's background.
+-      gfx::ScopedCanvas scoped_canvas(canvas);
+-      canvas->ClipPath(
+-          SkPath::RRect(SkRRect::MakeRectXY(
+-              SkRect::MakeLTRB(0, kTabTopInset, width(),
+-                               height() + kCornerRadius),
+-              kCornerRadius, kCornerRadius)),
+-          /*do_anti_alias=*/true);
+-      SkPathBuilder triangle;
+-      triangle.moveTo(0, kTabTopInset);
+-      triangle.lineTo(kProfileMarkSize, kTabTopInset);
+-      triangle.lineTo(0, kTabTopInset + kProfileMarkSize);
+-      triangle.close();
+-      cc::PaintFlags mark;
+-      mark.setAntiAlias(true);
+-      mark.setColor(data_.profile_color);
+-      canvas->DrawPath(triangle.detach(), mark);
++      PaintProfileMark(canvas);
+     }
+ 
+     if (show_separator_) {
+@@ -226,6 +216,71 @@ class UnifiedTabView : public views::View {
+     }
+   }
+ 
++  // The marks are clipped to the shape of the active tab's background, so
++  // they follow its rounded top corners.
++  void PaintProfileMark(gfx::Canvas* canvas) {
++    gfx::ScopedCanvas scoped_canvas(canvas);
++    canvas->ClipPath(SkPath::RRect(SkRRect::MakeRectXY(
++                         SkRect::MakeLTRB(0, kTabTopInset, width(),
++                                          height() + kCornerRadius),
++                         kCornerRadius, kCornerRadius)),
++                     /*do_anti_alias=*/true);
++    cc::PaintFlags mark;
++    mark.setAntiAlias(true);
++    mark.setColor(data_.profile_color);
++    const float half = kMarkLineWidth / 2;
++    switch (strip_->mark_style()) {
++      case ProfileMarkStyle::kTriangle: {
++        SkPathBuilder triangle;
++        triangle.moveTo(0, kTabTopInset);
++        triangle.lineTo(kMarkTriangleSize, kTabTopInset);
++        triangle.lineTo(0, kTabTopInset + kMarkTriangleSize);
++        triangle.close();
++        canvas->DrawPath(triangle.detach(), mark);
++        break;
++      }
++      case ProfileMarkStyle::kTopLine:
++        canvas->DrawRoundRect(
++            gfx::RectF(kMarkLineInset, kTabTopInset,
++                       width() - 2 * kMarkLineInset, kMarkLineWidth),
++            half, mark);
++        break;
++      case ProfileMarkStyle::kBottomLine:
++        canvas->DrawRoundRect(
++            gfx::RectF(kTabPadding,
++                       height() - kMarkBottomInset - kMarkLineWidth,
++                       width() - 2 * kTabPadding, kMarkLineWidth),
++            half, mark);
++        break;
++      case ProfileMarkStyle::kSideBar: {
++        const float center_y = kTabTopInset + (height() - kTabTopInset) / 2.0f;
++        canvas->DrawRoundRect(
++            gfx::RectF(kMarkSideInset, center_y - kMarkSideHeight / 2,
++                       kMarkLineWidth, kMarkSideHeight),
++            half, mark);
++        break;
++      }
++      case ProfileMarkStyle::kCorner: {
++        mark.setStyle(cc::PaintFlags::kStroke_Style);
++        mark.setStrokeWidth(kMarkLineWidth);
++        mark.setStrokeCap(cc::PaintFlags::kRound_Cap);
++        const float top = kTabTopInset + half;
++        const float radius = kCornerRadius - half;
++        SkPathBuilder corner;
++        corner.moveTo(half, top + kMarkCornerLength);
++        corner.lineTo(half, top + radius);
++        corner.arcTo(SkRect::MakeLTRB(half, top, half + 2 * radius,
++                                      top + 2 * radius),
++                     180, 90, false);
++        corner.lineTo(half + kMarkCornerLength, top);
++        canvas->DrawPath(corner.detach(), mark);
++        break;
++      }
++      case ProfileMarkStyle::kNone:
++        break;
++    }
++  }
++
+   void OnThemeChanged() override {
+     views::View::OnThemeChanged();
+     UpdateColors();
+@@ -406,7 +461,11 @@ void UnifiedTabStrip::Layout(PassKey) {
+     tabs_[pressed_index_]->SetBounds(drag_x_, 0, tab_width, height());
+   }
+   // Separators between tabs, but not next to the active or a hovered tab,
+-  // nor right before a profile color corner, which marks the tab already.
++  // nor right before a profile mark at the leading edge, which divides the
++  // tabs already.
++  const bool leading_marks = mark_style_ == ProfileMarkStyle::kTriangle ||
++                             mark_style_ == ProfileMarkStyle::kSideBar ||
++                             mark_style_ == ProfileMarkStyle::kCorner;
+   for (int i = 0; i < count; ++i) {
+     const bool last = i == count - 1;
+     const auto quiet = [&](int index) {
+@@ -414,7 +473,7 @@ void UnifiedTabStrip::Layout(PassKey) {
+     };
+     tabs_[i]->SetShowSeparator(
+         !dragging_ && !last && quiet(i) && quiet(i + 1) &&
+-        !SkColorGetA(tabs_[i + 1]->data().profile_color));
++        !(leading_marks && SkColorGetA(tabs_[i + 1]->data().profile_color)));
+   }
+   new_tab_button_->SetBounds(
+       count * tab_width + kNewTabButtonSpacing,
+@@ -431,6 +490,17 @@ void UnifiedTabStrip::Layout(PassKey) {
+   }
+ }
+ 
++void UnifiedTabStrip::SetMarkStyle(ProfileMarkStyle style) {
++  if (style == mark_style_) {
++    return;
++  }
++  mark_style_ = style;
++  DeprecatedLayoutImmediately();
++  for (UnifiedTabView* tab : tabs_) {
++    tab->SchedulePaint();
++  }
++}
++
+ void UnifiedTabStrip::SetUpdateVersion(const std::u16string& version) {
+   if (version == update_version_) {
+     return;
+@@ -533,6 +603,8 @@ void UnifiedTabStrip::ShowContextMenuForViewImpl(
+   const int index = TabIndexAt(local);
+   if (index >= 0) {
+     delegate_->ShowTabMenu(index, point);
++  } else {
++    delegate_->ShowStripMenu(point);
+   }
+ }
+ 
+-- 
+2.56.0
+

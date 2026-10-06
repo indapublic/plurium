@@ -3,8 +3,8 @@
 Chromium for macOS where the tabs of **all your profiles** live in one window,
 in one tab strip. Work, personal and side-project accounts stay fully isolated
 (cookies, logins, extensions), but you see and switch between all their tabs at
-once, in any order you like. A small triangle in the top-left corner of each
-tab shows its profile's theme color.
+once, in any order you like. A line along the top of each tab shows its
+profile's theme color.
 
 ![Tabs of four profiles in one strip](docs/strip.jpg)
 
@@ -41,8 +41,10 @@ The app is signed with a Developer ID and notarized by Apple.
 - One window for all profiles: each profile's browser window becomes a tab of
   one native macOS window tab group. Their AppKit tab bar is hidden.
 - One tab strip with the tabs of all profiles, drawn the same way, with a
-  triangle in the profile color in the top-left corner of each tab (the same
-  strip with a single window).
+  line in the profile color along the top of each tab (the same strip with a
+  single window). Right-click a tab or the strip → **Profile Color** for other
+  marks: a corner triangle, a line below, a bar on the side, a corner outline
+  or none.
   Click to switch (profiles switch as needed), drag to reorder anywhere,
   middle-click or × to close.
 - Right-click a tab: Reload, Duplicate, Mute, **Move to profile** (reopens the
@@ -110,6 +112,7 @@ it never mixes with the installed Plurium. The detailed guide
 | `0004` | One tab strip with the tabs of all profiles |
 | `0005` | Plurium name, bundle id, data directory and icon |
 | `0006` | Updates through Homebrew from inside the app |
+| `0007` | Choice of the profile color mark (line on top by default) |
 
 Releases are made with `tools/release.sh` (Chromium's signing scripts,
 notarization, DMG, cask bump).
