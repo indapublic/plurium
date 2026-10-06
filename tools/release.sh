@@ -26,6 +26,17 @@ PUBLISH=0
 
 step() { echo; echo "=== $*"; }
 
+# Apple's timestamp server occasionally does not answer.
+retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    "$@" && return 0
+    echo "Attempt $attempt failed: $*"
+    sleep 20
+  done
+  return 1
+}
+
 # Submits $1 to Apple's notary service, waits, fails with the log unless
 # accepted.
 notarize() {
@@ -79,7 +90,7 @@ mkdir -p "$WORK/dmg"
 ditto "$APP" "$WORK/dmg/Plurium.app"
 ln -s /Applications "$WORK/dmg/Applications"
 hdiutil create -volname "Plurium" -srcfolder "$WORK/dmg" -fs APFS -format ULFO -ov "$DMG"
-codesign --sign "$IDENTITY" --timestamp "$DMG"
+retry codesign --force --sign "$IDENTITY" --timestamp "$DMG"
 
 step "Notarize the DMG"
 notarize "$DMG"
