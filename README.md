@@ -57,6 +57,10 @@ The app is signed with a Developer ID and notarized by Apple.
   of any profile — in its own profile and at its old place in the strip, even
   if that profile's window had closed. Closing the active tab activates its
   neighbor in the strip.
+- Vertical tabs (*Settings → Appearance → Tab position: Vertical*) show the
+  same tabs as a column on the left, with a **+** row under them; collapse,
+  resize and expand on hover work as in Chromium. The tab position, collapse
+  state and width are shared by all profiles of the window.
 - Incognito windows join too ("Work (Incognito)"). DevTools, popups, PWAs and
   dialogs stay separate windows.
 - Shared fullscreen for the whole group, with the same strip in fullscreen.
@@ -118,6 +122,7 @@ it never mixes with the installed Plurium. The detailed guide
 | `0006` | Updates through Homebrew from inside the app |
 | `0007` | Choice of the profile color mark (line on top by default) |
 | `0008` | ⌘⇧T and the focus after closing a tab follow the unified strip |
+| `0009` | The unified strip with vertical tabs |
 
 Releases are made with `tools/release.sh` (Chromium's signing scripts,
 notarization, DMG, cask bump).

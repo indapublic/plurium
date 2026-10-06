@@ -1,7 +1,7 @@
 From 6a0c9e3c1940c28dd50adb9f972e8b26db0a4c6a Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 6 Oct 2026 18:41:58 +1000
-Subject: [PATCH 7/8] Mac: choice of the profile color mark, a line on top by
+Subject: [PATCH 7/9] Mac: choice of the profile color mark, a line on top by
  default
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

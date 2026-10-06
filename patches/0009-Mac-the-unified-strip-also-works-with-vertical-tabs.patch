@@ -1,0 +1,834 @@
+From c19c86c38d9ce985305025c274659895ef78eb2f Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Tue, 6 Oct 2026 21:44:00 +1000
+Subject: [PATCH 9/9] Mac: the unified strip also works with vertical tabs
+
+With Tab position: Vertical, Chromium shows its vertical tab strip and
+the unified strip stayed in the hidden horizontal region, so every
+window showed only its own profile's tabs.
+
+With vertical tabs the unified strip becomes a column of rows inside
+the vertical region. It covers the tab list and the new tab button under
+it, leaving the buttons at the top (collapse, tab groups, tab search) in
+place, and draws its own "+" row after the last tab. The rows scroll
+with the mouse wheel when they do not fit, the "+" row stays at the
+bottom, and a newly active tab scrolls into view. Drag reordering works
+along the column, and the collapsed strip shows just the icons.
+Switching the tab position in settings rebuilds the strip on the fly.
+
+Chromium keeps the tab position per profile and the collapse state and
+width per window. In the group they are shared: changing them in one
+window applies to all profiles of the group, and a window joining the
+group takes the group's state, so the strip does not change shape when
+switching between profiles.
+
+The strip's context menu also lists "New tab in <profile>", and
+accessibility clients can press a tab to select it.
+---
+ .../ui/views/frame/profile_tabs_mac.mm        | 227 +++++++++++++++---
+ .../ui/views/frame/unified_tab_strip_mac.h    |  20 ++
+ .../ui/views/frame/unified_tab_strip_mac.mm   | 213 ++++++++++++++--
+ 3 files changed, 401 insertions(+), 59 deletions(-)
+
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index 4bb61057947f9..61f3958b1f2cc 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -25,6 +25,7 @@
+ #include "base/memory/weak_ptr.h"
+ #include "base/no_destructor.h"
+ #include "base/path_service.h"
++#include "base/scoped_multi_source_observation.h"
+ #include "base/scoped_observation.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/sys_string_conversions.h"
+@@ -52,13 +53,18 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+ #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
++#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/frame/plurium_update_mac.h"
+ #include "chrome/browser/ui/views/frame/unified_tab_strip_mac.h"
++#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
++#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
+ #include "chrome/common/chrome_paths.h"
++#include "chrome/common/pref_names.h"
++#include "components/prefs/pref_service.h"
+ #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
+ #include "components/sessions/core/tab_restore_service.h"
+ #include "components/sessions/core/tab_restore_service_observer.h"
+@@ -485,6 +491,16 @@ class ProfileTabsWindow : public views::WidgetObserver,
+     // into fullscreen at the next launch. Don't let it until the window has
+     // joined the group (or Chromium itself asks for fullscreen).
+     SetCanBeFullscreenPrimary(false);
++    // The tab position setting swaps the tab strip regions.
++    if (auto* controller =
++            tabs::VerticalTabStripStateController::From(browser())) {
++      tab_position_subscription_ = controller->RegisterOnModeChanged(
++          base::BindRepeating(&ProfileTabsWindow::OnTabPositionChanged,
++                              base::Unretained(this)));
++      collapse_subscription_ = controller->RegisterOnCollapseChanged(
++          base::BindRepeating(&ProfileTabsWindow::OnVerticalTabsCollapseChanged,
++                              base::Unretained(this)));
++    }
+   }
+   ProfileTabsWindow(const ProfileTabsWindow&) = delete;
+   ProfileTabsWindow& operator=(const ProfileTabsWindow&) = delete;
+@@ -640,13 +656,21 @@ class ProfileTabsWindow : public views::WidgetObserver,
+     LayoutStrip();
+   }
+ 
+-  // views::ViewObserver (Chromium's tab strip region, which the unified tab
+-  // strip covers, and the unified tab strip):
++  // views::ViewObserver (Chromium's tab strip regions and the tab list the
++  // unified tab strip covers, and the unified tab strip):
+   void OnViewBoundsChanged(views::View* observed_view) override {
+     if (observed_view != strip_) {
+       LayoutStrip();
+     }
+   }
++  // Switching between horizontal and vertical tabs shows the other region.
++  void OnViewVisibilityChanged(views::View* observed_view,
++                               views::View* starting_view,
++                               bool visible) override {
++    if (observed_view != strip_) {
++      PostPlaceStrip();
++    }
++  }
+   // Immersive fullscreen moves Chromium's tab strip to an overlay widget and
+   // back.
+   void OnViewAddedToWidget(views::View* observed_view) override {
+@@ -659,9 +683,10 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       strip_observation_.Reset();
+       strip_ = nullptr;
+       strip_visible_ = false;
+-    } else {
+-      region_observation_.Reset();
++      return;
+     }
++    chromium_views_.RemoveObservation(observed_view);
++    std::erase(hidden_views_, observed_view);
+   }
+ 
+   // TabStripModelObserver:
+@@ -799,8 +824,11 @@ class ProfileTabsWindow : public views::WidgetObserver,
+ 
+   void UpdateButtonPressed() override { plurium_update::PromptForUpdate(); }
+ 
++  // The strip's empty space also opens new tabs in any profile.
+   void ShowStripMenu(const gfx::Point& screen_point) override {
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    AddNewTabItems();
++    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+     AddMarkStyleSubmenu();
+     RunMenu(screen_point);
+   }
+@@ -819,6 +847,12 @@ class ProfileTabsWindow : public views::WidgetObserver,
+ 
+   void ShowNewTabMenu(const gfx::Point& screen_point) override {
+     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    AddNewTabItems();
++    RunMenu(screen_point);
++  }
++
++  // "New tab in <profile>" for each window of the group.
++  void AddNewTabItems() {
+     menu_windows_.clear();
+     for (ProfileTabsWindow* window : GroupWindowsInOrder()) {
+       menu_model_->AddItemWithIcon(
+@@ -826,7 +860,6 @@ class ProfileTabsWindow : public views::WidgetObserver,
+           u"New tab in " + window->title(), ProfileAvatar(window->profile()));
+       menu_windows_.push_back(window);
+     }
+-    RunMenu(screen_point);
+   }
+ 
+   // ui::SimpleMenuModel::Delegate:
+@@ -1015,27 +1048,69 @@ class ProfileTabsWindow : public views::WidgetObserver,
+             << top_inset_;
+   }
+ 
+-  // Chromium's tab strip stays in place (keeping the tab strip row and the
+-  // window's minimum size) but is made invisible and inert; the unified tab
+-  // strip covers it.
+-  void SetChromiumTabStripHidden(bool hidden) {
+-    views::View* region = browser_view_->tab_strip_view();
++  bool VerticalTabs() const {
++    return browser_view_->ShouldDrawVerticalTabStrip();
++  }
++
++  // What the unified tab strip covers: Chromium's horizontal tab strip
++  // region, or with vertical tabs the tab list of the vertical region and the
++  // new tab button under it (the list is only as tall as its own tabs), but
++  // not the buttons at the top.
++  std::vector<views::View*> CoveredViews() const {
++    TabStripRegionView* region = browser_view_->tab_strip_view();
+     if (!region) {
+-      return;
++      return {};
+     }
+-    if (!region->layer()) {
+-      region->SetPaintToLayer();
+-      region->layer()->SetFillsBoundsOpaquely(false);
++    if (!VerticalTabs()) {
++      return {region};
+     }
+-    region->layer()->SetOpacity(hidden ? 0.0f : 1.0f);
+-    region->SetCanProcessEventsWithinSubtree(!hidden);
+-    // Keep the invisible strip out of the accessibility tree; the unified
+-    // strip exposes the tabs instead.
+-    region->GetViewAccessibility().SetIsLeaf(hidden);
+-    region->GetViewAccessibility().SetIsIgnored(hidden);
+-    if (hidden && !region_observation_.IsObserving()) {
+-      region_observation_.Observe(region);
++    auto* vertical = views::AsViewClass<VerticalTabStripRegionView>(region);
++    if (!vertical || !vertical->GetTabStripView()) {
++      return {};
++    }
++    return {vertical->GetTabStripView(), vertical->GetBottomContainer()};
++  }
++
++  void ObserveChromiumViews() {
++    std::vector<views::View*> views = CoveredViews();
++    views.push_back(browser_view_->tab_strip_view());
++    for (views::View* view : views) {
++      if (view && !chromium_views_.IsObservingSource(view)) {
++        chromium_views_.AddObservation(view);
++      }
++    }
++  }
++
++  // The covered views stay in place (keeping their row or column and the
++  // window's minimum size) but are made invisible and inert. Views covered
++  // before the tab position changed get their look back.
++  void UpdateHiddenViews() {
++    std::vector<views::View*> targets;
++    if (strip_visible_) {
++      targets = CoveredViews();
+     }
++    for (views::View* view : hidden_views_) {
++      if (!std::ranges::contains(targets, view)) {
++        SetViewHidden(view, false);
++      }
++    }
++    for (views::View* view : targets) {
++      SetViewHidden(view, true);
++    }
++    hidden_views_.assign(targets.begin(), targets.end());
++  }
++
++  static void SetViewHidden(views::View* view, bool hidden) {
++    if (!view->layer()) {
++      view->SetPaintToLayer();
++      view->layer()->SetFillsBoundsOpaquely(false);
++    }
++    view->layer()->SetOpacity(hidden ? 0.0f : 1.0f);
++    view->SetCanProcessEventsWithinSubtree(!hidden);
++    // Keep the invisible tabs out of the accessibility tree; the unified
++    // strip exposes the tabs instead.
++    view->GetViewAccessibility().SetIsLeaf(hidden);
++    view->GetViewAccessibility().SetIsIgnored(hidden);
+   }
+ 
+   void ShowStrip(bool show) {
+@@ -1050,7 +1125,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       return;
+     }
+     strip_visible_ = show;
+-    SetChromiumTabStripHidden(show);
++    ObserveChromiumViews();
++    UpdateHiddenViews();
+     strip_->SetVisible(show);
+     if (show) {
+       PlaceStrip();
+@@ -1062,9 +1138,14 @@ class ProfileTabsWindow : public views::WidgetObserver,
+ 
+   // The unified tab strip lives in the frame view, which handles its
+   // non-client hit testing, or next to Chromium's tab strip while immersive
+-  // fullscreen hosts that in an overlay widget.
++  // fullscreen hosts that in an overlay widget. With vertical tabs it is a
++  // child of the vertical region (which does not move in fullscreen), so the
++  // region's expand on hover sees the mouse over it.
+   views::View* StripParent() const {
+     views::View* region = browser_view_->tab_strip_view();
++    if (region && VerticalTabs()) {
++      return region;
++    }
+     if (region && region->parent() && region->GetWidget() &&
+         region->GetWidget() != widget_) {
+       return region->parent();
+@@ -1076,6 +1157,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
+     if (!strip_) {
+       return;
+     }
++    ObserveChromiumViews();
++    UpdateHiddenViews();
++    strip_->SetVertical(VerticalTabs());
+     views::View* parent = StripParent();
+     if (strip_->parent() != parent) {
+       parent->AddChildView(strip_->parent()->RemoveChildViewT(strip_.get()));
+@@ -1083,22 +1167,86 @@ class ProfileTabsWindow : public views::WidgetObserver,
+     LayoutStrip();
+   }
+ 
++  void OnTabPositionChanged(tabs::VerticalTabStripStateController*) {
++    PostPlaceStrip();
++    if (attached_) {
++      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE,
++          base::BindOnce(&SyncTabPosition, VerticalTabsPref(profile())));
++    }
++  }
++
++  // Chromium keeps the tab position per profile. The group shows all
++  // profiles in one window, so a change in one profile applies to all
++  // profiles of the group.
++  static bool VerticalTabsPref(Profile* profile) {
++    return profile->GetPrefs()->GetBoolean(prefs::kVerticalTabsEnabled);
++  }
++  static void SyncTabPosition(bool vertical) {
++    for (ProfileTabsWindow* window : AllWindows()) {
++      if (window->attached() && VerticalTabsPref(window->profile()) != vertical) {
++        window->profile()->GetPrefs()->SetBoolean(prefs::kVerticalTabsEnabled,
++                                                  vertical);
++      }
++    }
++  }
++
++  // Chromium keeps the vertical tab strip's collapse state and width per
++  // window; in the group they follow the window that changed them, so the
++  // tab strip does not jump when switching between profiles.
++  void OnVerticalTabsCollapseChanged(
++      tabs::VerticalTabStripCollapseState state) {
++    if (state == tabs::VerticalTabStripCollapseState::kCollapsing ||
++        !attached_) {
++      return;
++    }
++    for (ProfileTabsWindow* window : AllWindows()) {
++      if (window != this && window->attached()) {
++        window->CopyVerticalTabsState(*this);
++      }
++    }
++  }
++  void CopyVerticalTabsState(const ProfileTabsWindow& from) {
++    auto* source = tabs::VerticalTabStripStateController::From(from.browser());
++    auto* target = tabs::VerticalTabStripStateController::From(browser());
++    if (!source || !target) {
++      return;
++    }
++    if (target->GetUncollapsedWidth() != source->GetUncollapsedWidth()) {
++      target->SetUncollapsedWidth(source->GetUncollapsedWidth());
++    }
++    if (target->IsCollapsed() != source->IsCollapsed()) {
++      target->RequestCollapse(source->IsCollapsed());
++    }
++  }
++
+   void PostPlaceStrip() {
+     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+         FROM_HERE, base::BindOnce(&ProfileTabsWindow::PlaceStrip,
+                                   weak_factory_.GetWeakPtr()));
+   }
+ 
+-  // The unified tab strip covers the contents of Chromium's tab strip region
+-  // (in fullscreen the region's border keeps clear of the window buttons).
++  // The unified tab strip covers the covered views: the contents of the
++  // horizontal region (in fullscreen its border keeps clear of the window
++  // buttons) or the vertical tab list down to the bottom of the new tab
++  // button's container.
+   void LayoutStrip() {
+-    views::View* region = browser_view_->tab_strip_view();
+-    if (!strip_visible_ || !region || !region->GetWidget() ||
+-        region->GetWidget() != strip_->GetWidget()) {
++    const std::vector<views::View*> covered = CoveredViews();
++    if (!strip_visible_ || covered.empty() ||
++        strip_->vertical() != VerticalTabs()) {
+       return;
+     }
+-    strip_->SetBoundsRect(gfx::ToEnclosingRect(views::View::ConvertRectToTarget(
+-        region, strip_->parent(), gfx::RectF(region->GetContentsBounds()))));
++    gfx::RectF bounds;
++    for (views::View* view : covered) {
++      if (!view->GetWidget() || view->GetWidget() != strip_->GetWidget()) {
++        return;
++      }
++      bounds.Union(views::View::ConvertRectToTarget(
++          view, strip_->parent(),
++          gfx::RectF(strip_->vertical() ? view->GetLocalBounds()
++                                        : view->GetContentsBounds())));
++    }
++    strip_->SetBoundsRect(gfx::ToEnclosingRect(bounds));
+   }
+ 
+   void Attach() {
+@@ -1144,6 +1292,15 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       VLOG(1) << "profile tabs: first window " << base::UTF16ToUTF8(title_);
+       return;
+     }
++    // A profile joining the group takes the group's tab position and
++    // vertical tab strip state.
++    for (ProfileTabsWindow* other : AllWindows()) {
++      if (other != this && other->attached()) {
++        SyncTabPosition(VerticalTabsPref(other->profile()));
++        CopyVerticalTabsState(*other);
++        break;
++      }
++    }
+     // Append to the end of the group so window positions stay stable. Keep
+     // the current selection unless this window was activated (e.g. session
+     // restore and focused:false windows must not steal focus).
+@@ -1189,8 +1346,12 @@ class ProfileTabsWindow : public views::WidgetObserver,
+ 
+   base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
+       this};
+-  base::ScopedObservation<views::View, views::ViewObserver>
+-      region_observation_{this};
++  // Chromium's tab strip regions and the views the strip covered.
++  base::ScopedMultiSourceObservation<views::View, views::ViewObserver>
++      chromium_views_{this};
++  std::vector<raw_ptr<views::View>> hidden_views_;
++  base::CallbackListSubscription tab_position_subscription_;
++  base::CallbackListSubscription collapse_subscription_;
+   base::ScopedObservation<views::View, views::ViewObserver>
+       strip_observation_{this};
+   base::WeakPtrFactory<ProfileTabsWindow> weak_factory_{this};
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+index 9df64de20f16a..4c6f98c3999c0 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+@@ -89,6 +89,10 @@ class UnifiedTabStrip : public views::View,
+   void SetUpdateVersion(const std::u16string& version);
+   void SetMarkStyle(ProfileMarkStyle style);
+   ProfileMarkStyle mark_style() const { return mark_style_; }
++  // A column of rows with a new tab row under them, covering the tab list of
++  // Chromium's vertical tab strip (the buttons at its top stay).
++  void SetVertical(bool vertical);
++  bool vertical() const { return vertical_; }
+ 
+   // HTCLIENT over a tab or the new tab button, HTCAPTION over empty strip
+   // space (so it drags the window), HTNOWHERE outside the strip.
+@@ -98,11 +102,13 @@ class UnifiedTabStrip : public views::View,
+   // Called by tab views when the hover state changes (separators follow it).
+   void OnTabHoverChanged();
+   void CloseTabView(const UnifiedTabView* tab);
++  void ActivateTabView(const UnifiedTabView* tab);
+ 
+   // views::View:
+   void Layout(PassKey) override;
+   bool OnMousePressed(const ui::MouseEvent& event) override;
+   bool OnMouseDragged(const ui::MouseEvent& event) override;
++  bool OnMouseWheel(const ui::MouseWheelEvent& event) override;
+   void OnMouseReleased(const ui::MouseEvent& event) override;
+   void OnMouseCaptureLost() override;
+ 
+@@ -114,6 +120,16 @@ class UnifiedTabStrip : public views::View,
+ 
+  private:
+   int TabWidth() const;
++  // The distance between neighboring tabs along the strip.
++  int TabPitch() const;
++  // Vertical: the height for the rows, above the "+" row and the update
++  // button.
++  int VerticalListHeight() const;
++  int UpdateButtonHeight() const;
++  void LayoutHorizontal();
++  void LayoutVertical();
++  // Where `point` is along the strip, in content coordinates.
++  int AlongStrip(const gfx::Point& point) const;
+   int TabIndexAt(const gfx::Point& point) const;
+   void CancelDrag();
+ 
+@@ -123,6 +139,10 @@ class UnifiedTabStrip : public views::View,
+   raw_ptr<views::MdTextButton> update_button_ = nullptr;
+   std::u16string update_version_;
+   ProfileMarkStyle mark_style_ = ProfileMarkStyle::kTopLine;
++  bool vertical_ = false;
++  // Vertical: how far the rows are scrolled up.
++  int scroll_offset_ = 0;
++  int last_selected_index_ = -1;
+ 
+   int pressed_index_ = -1;
+   int pressed_button_ = 0;  // ui::EF_*_MOUSE_BUTTON
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+index 4691600f8e00e..c31e772a428a9 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+@@ -17,6 +17,7 @@
+ #include "chrome/app/vector_icons/vector_icons.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "components/vector_icons/vector_icons.h"
++#include "ui/accessibility/ax_action_data.h"
+ #include "ui/accessibility/ax_enums.mojom.h"
+ #include "ui/base/hit_test.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -29,6 +30,7 @@
+ #include "ui/gfx/scoped_canvas.h"
+ #include "ui/gfx/text_constants.h"
+ #include "ui/views/accessibility/view_accessibility.h"
++#include "ui/views/background.h"
+ #include "ui/views/controls/button/image_button.h"
+ #include "ui/views/controls/button/md_text_button.h"
+ #include "ui/views/controls/image_view.h"
+@@ -62,6 +64,12 @@ constexpr float kMarkCornerLength = 14;
+ constexpr int kHoverBottomInset = 4;
+ constexpr int kSeparatorHeight = 16;
+ constexpr int kNewTabButtonSize = 28;
++constexpr int kVerticalTabHeight = 32;
++constexpr int kVerticalTabSpacing = 2;
++// Narrower than Chromium's minimum expanded width of the vertical tab strip.
++constexpr int kVerticalTabNarrowWidth = 100;
++// Chromium's vertical new tab button keeps the region's horizontal padding.
++constexpr int kVerticalNewTabInset = 12;
+ constexpr int kNewTabButtonSpacing = 6;
+ 
+ }  // namespace
+@@ -109,6 +117,15 @@ class UnifiedTabView : public views::View {
+   const UnifiedTabData& data() const { return data_; }
+   bool hovered() const { return hovered_; }
+ 
++  // Accessibility clients (VoiceOver) press a tab to select it.
++  bool HandleAccessibleAction(const ui::AXActionData& action_data) override {
++    if (action_data.action != ax::mojom::Action::kDoDefault) {
++      return views::View::HandleAccessibleAction(action_data);
++    }
++    strip_->ActivateTabView(this);
++    return true;
++  }
++
+   void SetData(const UnifiedTabData& data) {
+     data_ = data;
+     icon_->SetImage(data_.favicon);
+@@ -138,15 +155,20 @@ class UnifiedTabView : public views::View {
+     }
+   }
+ 
++  // Horizontal tabs leave room above them; vertical rows fill their bounds.
++  int TopInset() const { return strip_->vertical() ? 0 : kTabTopInset; }
++
+   // views::View:
+   void Layout(PassKey) override {
+-    const int center_y = kTabTopInset + (height() - kTabTopInset) / 2;
+-    const bool narrow = width() < kTabNarrowWidth;
++    const int center_y = TopInset() + (height() - TopInset()) / 2;
++    // Collapsed vertical tabs show just the icon, like Chromium's.
++    const bool narrow = width() < (strip_->vertical() ? kVerticalTabNarrowWidth
++                                                      : kTabNarrowWidth);
+     int left = kTabPadding;
+     int right = width() - kTabPadding;
+ 
+     const bool show_close =
+-        (data_.selected || hovered_) && width() >= kTabCloseMinWidth;
++        (data_.selected || hovered_) && !narrow && width() >= kTabCloseMinWidth;
+     close_->SetVisible(show_close);
+     if (show_close) {
+       close_->SetBounds(right - kCloseButtonSize,
+@@ -173,8 +195,8 @@ class UnifiedTabView : public views::View {
+     title_->SetVisible(!narrow);
+     if (!narrow) {
+       const int title_x = left + kIconSize + kIconTitleSpacing;
+-      title_->SetBounds(title_x, kTabTopInset, std::max(right - title_x, 0),
+-                        height() - kTabTopInset);
++      title_->SetBounds(title_x, TopInset(), std::max(right - title_x, 0),
++                        height() - TopInset());
+     }
+   }
+ 
+@@ -185,7 +207,10 @@ class UnifiedTabView : public views::View {
+     cc::PaintFlags flags;
+     flags.setAntiAlias(true);
+ 
+-    if (data_.selected) {
++    if (data_.selected && strip_->vertical()) {
++      flags.setColor(colors->GetColor(kColorTabBackgroundActiveFrameActive));
++      canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kCornerRadius, flags);
++    } else if (data_.selected) {
+       // Merges into the toolbar below, like Chrome's active tab.
+       flags.setColor(colors->GetColor(kColorTabBackgroundActiveFrameActive));
+       const gfx::RectF rect(0, kTabTopInset, width(), height() - kTabTopInset);
+@@ -193,6 +218,10 @@ class UnifiedTabView : public views::View {
+       canvas->DrawRect(gfx::RectF(0, rect.CenterPoint().y(), width(),
+                                   rect.height() / 2),
+                        flags);
++    } else if (hovered_ && strip_->vertical()) {
++      flags.setColor(
++          colors->GetColor(kColorTabBackgroundInactiveHoverFrameActive));
++      canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kCornerRadius, flags);
+     } else if (hovered_) {
+       flags.setColor(
+           colors->GetColor(kColorTabBackgroundInactiveHoverFrameActive));
+@@ -220,9 +249,13 @@ class UnifiedTabView : public views::View {
+   // they follow its rounded top corners.
+   void PaintProfileMark(gfx::Canvas* canvas) {
+     gfx::ScopedCanvas scoped_canvas(canvas);
++    // Horizontal tabs are open at the bottom, vertical rows are rounded all
++    // around.
++    const float top = TopInset();
++    const float bottom =
++        strip_->vertical() ? height() : height() + kCornerRadius;
+     canvas->ClipPath(SkPath::RRect(SkRRect::MakeRectXY(
+-                         SkRect::MakeLTRB(0, kTabTopInset, width(),
+-                                          height() + kCornerRadius),
++                         SkRect::MakeLTRB(0, top, width(), bottom),
+                          kCornerRadius, kCornerRadius)),
+                      /*do_anti_alias=*/true);
+     cc::PaintFlags mark;
+@@ -232,16 +265,16 @@ class UnifiedTabView : public views::View {
+     switch (strip_->mark_style()) {
+       case ProfileMarkStyle::kTriangle: {
+         SkPathBuilder triangle;
+-        triangle.moveTo(0, kTabTopInset);
+-        triangle.lineTo(kMarkTriangleSize, kTabTopInset);
+-        triangle.lineTo(0, kTabTopInset + kMarkTriangleSize);
++        triangle.moveTo(0, top);
++        triangle.lineTo(kMarkTriangleSize, top);
++        triangle.lineTo(0, top + kMarkTriangleSize);
+         triangle.close();
+         canvas->DrawPath(triangle.detach(), mark);
+         break;
+       }
+       case ProfileMarkStyle::kTopLine:
+         canvas->DrawRoundRect(
+-            gfx::RectF(kMarkLineInset, kTabTopInset,
++            gfx::RectF(kMarkLineInset, top,
+                        width() - 2 * kMarkLineInset, kMarkLineWidth),
+             half, mark);
+         break;
+@@ -253,7 +286,7 @@ class UnifiedTabView : public views::View {
+             half, mark);
+         break;
+       case ProfileMarkStyle::kSideBar: {
+-        const float center_y = kTabTopInset + (height() - kTabTopInset) / 2.0f;
++        const float center_y = top + (height() - top) / 2.0f;
+         canvas->DrawRoundRect(
+             gfx::RectF(kMarkSideInset, center_y - kMarkSideHeight / 2,
+                        kMarkLineWidth, kMarkSideHeight),
+@@ -264,15 +297,15 @@ class UnifiedTabView : public views::View {
+         mark.setStyle(cc::PaintFlags::kStroke_Style);
+         mark.setStrokeWidth(kMarkLineWidth);
+         mark.setStrokeCap(cc::PaintFlags::kRound_Cap);
+-        const float top = kTabTopInset + half;
++        const float stroke_top = top + half;
+         const float radius = kCornerRadius - half;
+         SkPathBuilder corner;
+-        corner.moveTo(half, top + kMarkCornerLength);
+-        corner.lineTo(half, top + radius);
+-        corner.arcTo(SkRect::MakeLTRB(half, top, half + 2 * radius,
+-                                      top + 2 * radius),
++        corner.moveTo(half, stroke_top + kMarkCornerLength);
++        corner.lineTo(half, stroke_top + radius);
++        corner.arcTo(SkRect::MakeLTRB(half, stroke_top, half + 2 * radius,
++                                      stroke_top + 2 * radius),
+                      180, 90, false);
+-        corner.lineTo(half + kMarkCornerLength, top);
++        corner.lineTo(half + kMarkCornerLength, stroke_top);
+         canvas->DrawPath(corner.detach(), mark);
+         break;
+       }
+@@ -388,6 +421,23 @@ void UnifiedTabStrip::SetTabs(const std::vector<UnifiedTabData>& tabs) {
+   for (size_t i = 0; i < tabs.size(); ++i) {
+     tabs_[i]->SetData(tabs[i]);
+   }
++  // Vertical: bring a newly active tab into view.
++  const auto selected = std::ranges::find_if(
++      tabs, [](const UnifiedTabData& data) { return data.selected; });
++  const int selected_index =
++      selected == tabs.end() ? -1 : static_cast<int>(selected - tabs.begin());
++  if (vertical_ && selected_index >= 0 &&
++      selected_index != last_selected_index_) {
++    const int pitch = TabPitch();
++    const int list_height = VerticalListHeight();
++    const int top = selected_index * pitch;
++    if (top < scroll_offset_) {
++      scroll_offset_ = top;
++    } else if (top + kVerticalTabHeight > scroll_offset_ + list_height) {
++      scroll_offset_ = top + kVerticalTabHeight - list_height;
++    }
++  }
++  last_selected_index_ = selected_index;
+   // The frame view does not lay out children that only invalidated their
+   // layout, so lay out right away.
+   DeprecatedLayoutImmediately();
+@@ -421,6 +471,13 @@ void UnifiedTabStrip::CloseTabView(const UnifiedTabView* tab) {
+   }
+ }
+ 
++void UnifiedTabStrip::ActivateTabView(const UnifiedTabView* tab) {
++  const auto it = std::ranges::find(tabs_, tab);
++  if (it != tabs_.end()) {
++    delegate_->ActivateTab(static_cast<int>(it - tabs_.begin()));
++  }
++}
++
+ int UnifiedTabStrip::TabWidth() const {
+   const int count = static_cast<int>(tabs_.size());
+   if (!count) {
+@@ -434,9 +491,30 @@ int UnifiedTabStrip::TabWidth() const {
+   return std::clamp(available / count, kTabMinWidth, kTabMaxWidth);
+ }
+ 
++int UnifiedTabStrip::TabPitch() const {
++  return vertical_ ? kVerticalTabHeight + kVerticalTabSpacing : TabWidth();
++}
++
++int UnifiedTabStrip::UpdateButtonHeight() const {
++  return std::min(update_button_->GetPreferredSize().height(),
++                  kVerticalTabHeight);
++}
++
++int UnifiedTabStrip::VerticalListHeight() const {
++  int list_height = height() - kVerticalTabHeight - kVerticalTabSpacing;
++  if (update_button_->GetVisible()) {
++    list_height -= UpdateButtonHeight() + kVerticalTabSpacing;
++  }
++  return list_height;
++}
++
++int UnifiedTabStrip::AlongStrip(const gfx::Point& point) const {
++  return vertical_ ? point.y() + scroll_offset_ : point.x();
++}
++
+ int UnifiedTabStrip::TabIndexAt(const gfx::Point& point) const {
+   for (size_t i = 0; i < tabs_.size(); ++i) {
+-    if (tabs_[i]->bounds().Contains(point)) {
++    if (tabs_[i]->GetVisible() && tabs_[i]->bounds().Contains(point)) {
+       return static_cast<int>(i);
+     }
+   }
+@@ -444,6 +522,54 @@ int UnifiedTabStrip::TabIndexAt(const gfx::Point& point) const {
+ }
+ 
+ void UnifiedTabStrip::Layout(PassKey) {
++  if (vertical_) {
++    LayoutVertical();
++  } else {
++    LayoutHorizontal();
++  }
++}
++
++void UnifiedTabStrip::LayoutVertical() {
++  const int count = static_cast<int>(tabs_.size());
++  const int pitch = TabPitch();
++  // The update button takes the bottom row. The "+" row follows the last tab
++  // and stays above it while the list scrolls.
++  const int list_height = VerticalListHeight();
++  if (update_button_->GetVisible()) {
++    update_button_->SetBounds(0, height() - UpdateButtonHeight(), width(),
++                              UpdateButtonHeight());
++  }
++  scroll_offset_ = std::clamp(scroll_offset_, 0,
++                              std::max(0, count * pitch - list_height));
++  new_tab_button_->SetBounds(
++      kVerticalNewTabInset,
++      std::min(count * pitch - scroll_offset_,
++               list_height + kVerticalTabSpacing),
++      width() - 2 * kVerticalNewTabInset, kVerticalTabHeight);
++  const auto place = [&](UnifiedTabView* tab, int y) {
++    tab->SetBounds(0, y - scroll_offset_, width(), kVerticalTabHeight);
++    tab->SetVisible(tab->y() + tab->height() <= list_height &&
++                    tab->bounds().bottom() > 0);
++  };
++  int slot = 0;
++  for (int i = 0; i < count; ++i) {
++    tabs_[i]->SetShowSeparator(false);
++    if (dragging_ && i == pressed_index_) {
++      continue;
++    }
++    if (dragging_ && slot == drop_index_) {
++      ++slot;
++    }
++    place(tabs_[i], slot * pitch);
++    ++slot;
++  }
++  if (dragging_) {
++    place(tabs_[pressed_index_], drag_x_);
++    tabs_[pressed_index_]->SetVisible(true);
++  }
++}
++
++void UnifiedTabStrip::LayoutHorizontal() {
+   const int tab_width = TabWidth();
+   const int count = static_cast<int>(tabs_.size());
+   int slot = 0;
+@@ -490,6 +616,36 @@ void UnifiedTabStrip::Layout(PassKey) {
+   }
+ }
+ 
++void UnifiedTabStrip::SetVertical(bool vertical) {
++  if (vertical == vertical_) {
++    return;
++  }
++  vertical_ = vertical;
++  scroll_offset_ = 0;
++  last_selected_index_ = -1;
++  CancelDrag();
++  // A "+" row under the tabs, like Chromium's vertical tab strip.
++  new_tab_button_->SetBackground(
++      vertical ? views::CreateRoundedRectBackground(
++                     kColorNewTabButtonBackgroundFrameActive, kCornerRadius)
++               : nullptr);
++  for (UnifiedTabView* tab : tabs_) {
++    tab->SetVisible(true);
++    tab->InvalidateLayout();
++    tab->SchedulePaint();
++  }
++  DeprecatedLayoutImmediately();
++}
++
++bool UnifiedTabStrip::OnMouseWheel(const ui::MouseWheelEvent& event) {
++  if (!vertical_) {
++    return false;
++  }
++  scroll_offset_ -= event.y_offset();
++  DeprecatedLayoutImmediately();
++  return true;
++}
++
+ void UnifiedTabStrip::SetMarkStyle(ProfileMarkStyle style) {
+   if (style == mark_style_) {
+     return;
+@@ -536,19 +692,23 @@ bool UnifiedTabStrip::OnMouseDragged(const ui::MouseEvent& event) {
+   if (pressed_index_ < 0 || pressed_button_ != ui::EF_LEFT_MOUSE_BUTTON) {
+     return false;
+   }
+-  const int tab_width = TabWidth();
++  const int pitch = TabPitch();
+   if (!dragging_) {
+     if (!ExceededDragThreshold(event.location() - press_location_)) {
+       return true;
+     }
+     dragging_ = true;
+-    drag_offset_ = press_location_.x() - tabs_[pressed_index_]->x();
++    const UnifiedTabView* tab = tabs_[pressed_index_];
++    drag_offset_ = AlongStrip(press_location_) -
++                   AlongStrip(gfx::Point(tab->x(), tab->y()));
+     ReorderChildView(tabs_[pressed_index_], children().size());
+   }
+   const int count = static_cast<int>(tabs_.size());
+-  drag_x_ = std::clamp(event.location().x() - drag_offset_, 0,
+-                       (count - 1) * tab_width);
+-  drop_index_ = std::clamp((drag_x_ + tab_width / 2) / tab_width, 0, count - 1);
++  // `drag_x_` is the dragged tab's position along the strip (x, or y in the
++  // scrolled rows).
++  drag_x_ = std::clamp(AlongStrip(event.location()) - drag_offset_, 0,
++                       (count - 1) * pitch);
++  drop_index_ = std::clamp((drag_x_ + pitch / 2) / pitch, 0, count - 1);
+   DeprecatedLayoutImmediately();
+   return true;
+ }
+@@ -596,7 +756,8 @@ void UnifiedTabStrip::ShowContextMenuForViewImpl(
+   gfx::Point local = point;
+   ConvertPointFromScreen(this, &local);
+   if (source == new_tab_button_.get() ||
+-      new_tab_button_->bounds().Contains(local)) {
++      (new_tab_button_->GetVisible() &&
++       new_tab_button_->bounds().Contains(local))) {
+     delegate_->ShowNewTabMenu(point);
+     return;
+   }
+-- 
+2.56.0
+
