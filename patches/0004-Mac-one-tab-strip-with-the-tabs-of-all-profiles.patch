@@ -1,4 +1,4 @@
-From 66440851031824e37ec24e46ad4be0c47e2cc44d Mon Sep 17 00:00:00 2001
+From f8efad488a98f2d2ef54b535a62008bf0d5354b1 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 11:23:50 +1000
 Subject: [PATCH 4/6] Mac: one tab strip with the tabs of all profiles
@@ -7,8 +7,8 @@ In every profile window (also one that is alone, so tabs always look
 the same) Chromium's own tab strip is made invisible and inert (it keeps its row
 and the window's minimum size, and leaves the accessibility tree) and a
 unified tab strip covers it. The unified strip shows the tabs of all
-profile windows in one global order, all drawn the same way, with a bar
-in their profile's theme color at the leading edge: click activates (switching
+profile windows in one global order, all drawn the same way, with a small
+triangle in their profile's theme color in the top-left corner: click activates (switching
 profile windows as needed), the close button or a middle click closes,
 dragging reorders anywhere, the new tab button opens a tab in the
 current profile (right click: in any profile), and the tab menu has
@@ -35,8 +35,8 @@ hit test hook now returns HTCAPTION for empty strip space.
  .../browser/ui/views/frame/profile_tabs_mac.h |  17 +-
  .../ui/views/frame/profile_tabs_mac.mm        | 942 +++++++++++++++---
  .../ui/views/frame/unified_tab_strip_mac.h    | 116 +++
- .../ui/views/frame/unified_tab_strip_mac.mm   | 484 +++++++++
- 6 files changed, 1408 insertions(+), 158 deletions(-)
+ .../ui/views/frame/unified_tab_strip_mac.mm   | 500 ++++++++++
+ 6 files changed, 1424 insertions(+), 158 deletions(-)
  create mode 100644 chrome/browser/ui/views/frame/unified_tab_strip_mac.h
  create mode 100644 chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
 
@@ -1334,7 +1334,7 @@ index 5be55bad16f71..b65f7932b3e07 100644
  }  // namespace profile_tabs
 diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
 new file mode 100644
-index 0000000000000..d24ed48df718d
+index 0000000000000..04bc24ce1d39b
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
 @@ -0,0 +1,116 @@
@@ -1368,7 +1368,7 @@ index 0000000000000..d24ed48df718d
 +  std::u16string title;
 +  std::u16string tooltip;
 +  ui::ImageModel favicon;
-+  // The tab's profile color, shown as a bar at the leading edge.
++  // The tab's profile color, shown along the tab's top-left corner.
 +  SkColor profile_color = SK_ColorTRANSPARENT;
 +  // The active tab of the window showing the strip.
 +  bool selected = false;
@@ -1396,8 +1396,8 @@ index 0000000000000..d24ed48df718d
 +};
 +
 +// Tab strip with the tabs of all profiles in one order, all drawn the same
-+// way whichever profile they belong to; a bar at each tab's leading edge
-+// shows its profile's color. Click activates, the close button or a middle
++// way whichever profile they belong to; each tab's top-left corner shows
++// its profile's color. Click activates, the close button or a middle
 +// click closes, dragging reorders, right click opens the delegate's menus.
 +class UnifiedTabStrip : public views::View,
 +                        public views::ContextMenuController {
@@ -1456,10 +1456,10 @@ index 0000000000000..d24ed48df718d
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_UNIFIED_TAB_STRIP_MAC_H_
 diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
 new file mode 100644
-index 0000000000000..76a24e8700348
+index 0000000000000..aaf1683d9e598
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,500 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -1471,6 +1471,10 @@ index 0000000000000..76a24e8700348
 +
 +#include "base/functional/bind.h"
 +#include "cc/paint/paint_flags.h"
++#include "third_party/skia/include/core/SkPath.h"
++#include "third_party/skia/include/core/SkPathBuilder.h"
++#include "third_party/skia/include/core/SkRRect.h"
++#include "third_party/skia/include/core/SkRect.h"
 +#include "chrome/app/vector_icons/vector_icons.h"
 +#include "chrome/browser/ui/color/chrome_color_id.h"
 +#include "components/vector_icons/vector_icons.h"
@@ -1483,6 +1487,7 @@ index 0000000000000..76a24e8700348
 +#include "ui/events/event.h"
 +#include "ui/gfx/canvas.h"
 +#include "ui/gfx/geometry/rect_f.h"
++#include "ui/gfx/scoped_canvas.h"
 +#include "ui/gfx/text_constants.h"
 +#include "ui/views/accessibility/view_accessibility.h"
 +#include "ui/views/controls/button/image_button.h"
@@ -1506,10 +1511,8 @@ index 0000000000000..76a24e8700348
 +constexpr int kIconTitleSpacing = 8;
 +constexpr int kCloseButtonSize = 20;
 +constexpr int kCornerRadius = 8;
-+// The profile color mark: a short vertical bar at the leading edge.
-+constexpr int kProfileMarkInset = 4;
-+constexpr int kProfileMarkWidth = 3;
-+constexpr int kProfileMarkHeight = 16;
++// The profile color mark: a triangle filling the tab's top-left corner.
++constexpr float kProfileMarkSize = 14;
 +constexpr int kHoverBottomInset = 4;
 +constexpr int kSeparatorHeight = 16;
 +constexpr int kNewTabButtonSize = 28;
@@ -1654,12 +1657,23 @@ index 0000000000000..76a24e8700348
 +    }
 +
 +    if (SkColorGetA(data_.profile_color)) {
-+      flags.setColor(data_.profile_color);
-+      const int center_y = kTabTopInset + (height() - kTabTopInset) / 2;
-+      canvas->DrawRoundRect(
-+          gfx::RectF(kProfileMarkInset, center_y - kProfileMarkHeight / 2,
-+                     kProfileMarkWidth, kProfileMarkHeight),
-+          kProfileMarkWidth / 2.0f, flags);
++      // Clipped to the rounded corner of the active tab's background.
++      gfx::ScopedCanvas scoped_canvas(canvas);
++      canvas->ClipPath(
++          SkPath::RRect(SkRRect::MakeRectXY(
++              SkRect::MakeLTRB(0, kTabTopInset, width(),
++                               height() + kCornerRadius),
++              kCornerRadius, kCornerRadius)),
++          /*do_anti_alias=*/true);
++      SkPathBuilder triangle;
++      triangle.moveTo(0, kTabTopInset);
++      triangle.lineTo(kProfileMarkSize, kTabTopInset);
++      triangle.lineTo(0, kTabTopInset + kProfileMarkSize);
++      triangle.close();
++      cc::PaintFlags mark;
++      mark.setAntiAlias(true);
++      mark.setColor(data_.profile_color);
++      canvas->DrawPath(triangle.detach(), mark);
 +    }
 +
 +    if (show_separator_) {
@@ -1837,14 +1851,16 @@ index 0000000000000..76a24e8700348
 +  if (dragging_) {
 +    tabs_[pressed_index_]->SetBounds(drag_x_, 0, tab_width, height());
 +  }
-+  // Separators between tabs, but not next to the active or a hovered tab.
++  // Separators between tabs, but not next to the active or a hovered tab,
++  // nor right before a profile color corner, which marks the tab already.
 +  for (int i = 0; i < count; ++i) {
 +    const bool last = i == count - 1;
 +    const auto quiet = [&](int index) {
 +      return !tabs_[index]->data().selected && !tabs_[index]->hovered();
 +    };
-+    tabs_[i]->SetShowSeparator(!dragging_ && !last && quiet(i) &&
-+                               quiet(i + 1));
++    tabs_[i]->SetShowSeparator(
++        !dragging_ && !last && quiet(i) && quiet(i + 1) &&
++        !SkColorGetA(tabs_[i + 1]->data().profile_color));
 +  }
 +  new_tab_button_->SetBounds(
 +      count * tab_width + kNewTabButtonSpacing,

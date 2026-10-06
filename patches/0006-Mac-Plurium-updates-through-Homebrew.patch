@@ -1,4 +1,4 @@
-From 87402cecde087dc7a5dd6f1eaf05266e14402b5f Mon Sep 17 00:00:00 2001
+From 4f0bf58d60049367fbc84634c3836d60c41ae94c Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 6 Oct 2026 13:01:22 +1000
 Subject: [PATCH 6/6] Mac: Plurium updates through Homebrew
@@ -15,14 +15,19 @@ after "About Plurium" into "Update to <version>…". chrome://settings/help
 uses the same check instead of Chromium's updater (one-line hook in
 version_updater_mac.mm) and offers "Relaunch" for an available update.
 
+A found update is first downloaded in the background (`brew update &&
+brew fetch --cask`, stopped after 20 minutes and retried at the next
+check); the button, the menu item and the About page offer it only once
+it is downloaded.
+
 Updating is a regular chrome::AttemptRelaunch(), so every profile's
-session is restored and pages can still cancel it. While an update is
-available the relaunch command is replaced
+session is restored and pages can still cancel it. While a downloaded
+update waits, the relaunch command is replaced
 (upgrade_util::SetRelaunchChromeBrowserCallbackForTesting(), the only
 hook the relaunch has): a detached script waits for the process to
-exit, runs `brew update` and `brew upgrade --cask
-indapublic/plurium/plurium`, and reopens the app with the relaunch
-switches. The log is ~/Library/Logs/Plurium/update.log.
+exit, runs `brew upgrade --cask indapublic/plurium/plurium` from the
+downloaded file without touching the network, and reopens the app with
+the relaunch switches. The log is ~/Library/Logs/Plurium/update.log.
 
 Copies not installed with Homebrew only point to the release page;
 Plurium Dev checks only when asked to.
@@ -33,12 +38,12 @@ testing. The About page's update texts say Plurium.
  chrome/app/settings_chromium_strings.grdp     |   8 +-
  chrome/browser/ui/BUILD.gn                    |   2 +
  .../ui/views/frame/plurium_update_mac.h       |  32 +
- .../ui/views/frame/plurium_update_mac.mm      | 556 ++++++++++++++++++
+ .../ui/views/frame/plurium_update_mac.mm      | 698 ++++++++++++++++++
  .../ui/views/frame/profile_tabs_mac.mm        |   5 +
  .../ui/views/frame/unified_tab_strip_mac.h    |   6 +
  .../ui/views/frame/unified_tab_strip_mac.mm   |  48 +-
  .../ui/webui/help/version_updater_mac.mm      |   6 +
- 8 files changed, 656 insertions(+), 7 deletions(-)
+ 8 files changed, 798 insertions(+), 7 deletions(-)
  create mode 100644 chrome/browser/ui/views/frame/plurium_update_mac.h
  create mode 100644 chrome/browser/ui/views/frame/plurium_update_mac.mm
 
@@ -120,10 +125,10 @@ index 0000000000000..a910345badedd
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_PLURIUM_UPDATE_MAC_H_
 diff --git a/chrome/browser/ui/views/frame/plurium_update_mac.mm b/chrome/browser/ui/views/frame/plurium_update_mac.mm
 new file mode 100644
-index 0000000000000..c8722efa9759f
+index 0000000000000..c2021ebce72e8
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/plurium_update_mac.mm
-@@ -0,0 +1,556 @@
+@@ -0,0 +1,698 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -131,6 +136,7 @@ index 0000000000000..c8722efa9759f
 +#include "chrome/browser/ui/views/frame/plurium_update_mac.h"
 +
 +#import <AppKit/AppKit.h>
++#include <signal.h>
 +
 +#include <algorithm>
 +#include <array>
@@ -150,7 +156,9 @@ index 0000000000000..c8722efa9759f
 +#include "base/functional/bind.h"
 +#include "base/functional/callback.h"
 +#include "base/logging.h"
++#include "base/memory/weak_ptr.h"
 +#include "base/no_destructor.h"
++#include "base/process/process.h"
 +#include "base/process/launch.h"
 +#include "base/process/process_handle.h"
 +#include "base/strings/string_number_conversions.h"
@@ -186,23 +194,55 @@ index 0000000000000..c8722efa9759f
 +
 +constexpr base::TimeDelta kFirstCheckDelay = base::Minutes(1);
 +constexpr base::TimeDelta kCheckInterval = base::Hours(6);
++// A stalled download is stopped and tried again at the next check.
++constexpr base::TimeDelta kDownloadTimeout = base::Minutes(20);
 +
-+// Runs detached: waits for Plurium to quit, upgrades it and reopens it.
-+// Arguments: pid, brew, cask, app bundle, log file, then the relaunch
-+// switches. `brew update` first: `brew upgrade` refreshes taps only daily.
++// Downloads the update into Homebrew's cache while Plurium keeps running, so
++// that upgrading after quitting needs no network. Arguments: brew, cask, log
++// file.
++constexpr char kDownloadScript[] = R"sh(brew=$1 cask=$2 log=$3
++mkdir -p "$(dirname "$log")"
++{
++  echo "=== $(date) download"
++  export HOMEBREW_NO_ENV_HINTS=1
++  "$brew" update --quiet && "$brew" fetch --cask "$cask"
++  code=$?
++  echo "brew fetch exit code: $code"
++} >> "$log" 2>&1
++exit $code
++)sh";
++
++// Runs detached: waits for Plurium to quit, upgrades it from the downloaded
++// cask (no network, no tap update) and reopens it. Arguments: pid, brew,
++// cask, app bundle, log file, then the relaunch switches.
 +constexpr char kUpdateScript[] = R"sh(pid=$1 brew=$2 cask=$3 app=$4 log=$5
 +shift 5
 +mkdir -p "$(dirname "$log")"
 +while kill -0 "$pid" 2>/dev/null; do sleep 0.5; done
 +{
-+  echo "=== $(date)"
-+  export HOMEBREW_NO_ENV_HINTS=1
-+  "$brew" update --quiet
++  echo "=== $(date) upgrade"
++  export HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_AUTO_UPDATE=1
 +  "$brew" upgrade --cask "$cask"
 +  echo "brew upgrade exit code: $?"
 +} >> "$log" 2>&1
 +open -a "$app" --args "$@"
 +)sh";
++
++base::FilePath LogPath() {
++  return base::GetHomeDir().Append("Library/Logs/Plurium/update.log");
++}
++
++// Blocking: waits for the download script; stops it (and its brew and curl)
++// after kDownloadTimeout.
++bool WaitForDownload(base::Process process) {
++  int exit_code = -1;
++  if (process.WaitForExitWithTimeout(kDownloadTimeout, &exit_code)) {
++    return exit_code == 0;
++  }
++  kill(-process.Pid(), SIGTERM);
++  process.WaitForExitWithTimeout(base::Seconds(10), &exit_code);
++  return false;
++}
 +
 +using Version = std::vector<int>;
 +
@@ -347,7 +387,16 @@ index 0000000000000..c8722efa9759f
 +  }
 +
 +  const Version& available() const { return available_; }
++  // What the UI offers: a downloaded update, or for copies not installed
++  // with Homebrew any newer release.
++  const Version& offered() const { return install_ ? ready_ : available_; }
 +  bool installed_with_brew() const { return install_.has_value(); }
++  bool downloading() const { return downloading_; }
++
++  // Runs once the running download ends, with whether it succeeded.
++  void OnDownloaded(base::OnceCallback<void(bool)> callback) {
++    download_callbacks_.push_back(std::move(callback));
++  }
 +  Version current() const {
 +    return install_ ? install_->version : RunningVersion();
 +  }
@@ -374,7 +423,21 @@ index 0000000000000..c8722efa9759f
 +      Check(/*user_initiated=*/true);
 +      return;
 +    }
-+    const std::string version = VersionString(available_);
++    if (install_ && ready_.empty()) {
++      if (!downloading_) {
++        StartDownload();
++      }
++      NSAlert* alert = [[NSAlert alloc] init];
++      alert.messageText = base::SysUTF8ToNSString(
++          "Downloading Plurium " + VersionString(available_));
++      alert.informativeText =
++          @"The update downloads in the background. When it is ready, an "
++          @"Update button appears in the tab strip.";
++      ShowAlert(alert, ^(NSModalResponse) {
++      });
++      return;
++    }
++    const std::string version = VersionString(offered());
 +    NSAlert* alert = [[NSAlert alloc] init];
 +    alert.messageText = base::SysUTF8ToNSString(
 +        "Plurium " + version + " is available");
@@ -482,17 +545,13 @@ index 0000000000000..c8722efa9759f
 +    const Version available = latest > current ? latest : Version();
 +    if (available != available_) {
 +      available_ = available;
-+      // Any relaunch, also from the About page or chrome://restart, then
-+      // installs the update.
-+      upgrade_util::SetRelaunchChromeBrowserCallbackForTesting(
-+          install_ && !available_.empty()
-+              ? base::BindRepeating(&Updater::RelaunchWithUpdate,
-+                                    base::Unretained(this))
-+              : upgrade_util::RelaunchChromeBrowserCallback());
-+      UpdateMenuItem();
-+      if (on_change_) {
-+        on_change_.Run();
++      if (ready_ != available_) {
++        ready_.clear();
 +      }
++      OnStateChanged();
++    }
++    if (install_ && !available_.empty() && ready_.empty() && !downloading_) {
++      StartDownload();
 +    }
 +    for (CheckCallback& callback : callbacks) {
 +      std::move(callback).Run(available_.empty() ? CheckResult::kUpToDate
@@ -513,13 +572,67 @@ index 0000000000000..c8722efa9759f
 +    }
 +  }
 +
++  void OnStateChanged() {
++    // Once the update is downloaded, any relaunch (also from the About page
++    // or chrome://restart) installs it.
++    upgrade_util::SetRelaunchChromeBrowserCallbackForTesting(
++        install_ && !ready_.empty()
++            ? base::BindRepeating(&Updater::RelaunchWithUpdate,
++                                  base::Unretained(this))
++            : upgrade_util::RelaunchChromeBrowserCallback());
++    UpdateMenuItem();
++    if (on_change_) {
++      on_change_.Run();
++    }
++  }
++
++  void StartDownload() {
++    std::vector<std::string> argv = {"/bin/sh",
++                                     "-c",
++                                     kDownloadScript,
++                                     "plurium-download",
++                                     install_->brew.value(),
++                                     kCask,
++                                     LogPath().value()};
++    base::LaunchOptions options;
++    options.new_process_group = true;
++    options.disclaim_responsibility = true;
++    base::Process process = base::LaunchProcess(argv, options);
++    if (!process.IsValid()) {
++      return;
++    }
++    downloading_ = true;
++    UpdateMenuItem();
++    VLOG(1) << "plurium update: downloading " << VersionString(available_);
++    base::ThreadPool::PostTaskAndReplyWithResult(
++        FROM_HERE, {base::MayBlock(), base::WithBaseSyncPrimitives()},
++        base::BindOnce(&WaitForDownload, std::move(process)),
++        base::BindOnce(&Updater::OnDownloadFinished, base::Unretained(this),
++                       available_));
++  }
++
++  void OnDownloadFinished(Version version, bool success) {
++    downloading_ = false;
++    VLOG(1) << "plurium update: download of " << VersionString(version)
++            << (success ? " finished" : " failed");
++    if (success && version == available_) {
++      ready_ = version;
++    }
++    OnStateChanged();
++    std::vector<base::OnceCallback<void(bool)>> callbacks =
++        std::move(download_callbacks_);
++    for (auto& callback : callbacks) {
++      std::move(callback).Run(success);
++    }
++  }
++
 +  // A regular relaunch (sessions of every profile are restored, pages can
 +  // still cancel it); RelaunchWithUpdate() then runs instead of the
 +  // relaunch itself.
 +  void ApplyUpdate() {
-+    if (install_ && !available_.empty()) {
++    if (install_ && !ready_.empty()) {
 +      VLOG(1) << "plurium update: relaunching to update to "
-+              << VersionString(available_);
++              << VersionString(ready_);
 +      chrome::AttemptRelaunch();
 +    }
 +  }
@@ -528,8 +641,7 @@ index 0000000000000..c8722efa9759f
 +  // detached script waits for this process to exit, upgrades Plurium and
 +  // reopens it with the same switches.
 +  bool RelaunchWithUpdate(const base::CommandLine& relaunch) {
-+    const base::FilePath log =
-+        base::GetHomeDir().Append("Library/Logs/Plurium/update.log");
++    const base::FilePath log = LogPath();
 +    std::vector<std::string> argv = {
 +        "/bin/sh",
 +        "-c",
@@ -581,11 +693,15 @@ index 0000000000000..c8722efa9759f
 +      const NSInteger about = [app_menu indexOfItemWithTag:IDC_ABOUT];
 +      [app_menu insertItem:item atIndex:about >= 0 ? about + 1 : 0];
 +    }
-+    item.title =
-+        available_.empty()
-+            ? @"Check for Updates…"
-+            : base::SysUTF8ToNSString("Update to " +
-+                                      VersionString(available_) + "…");
++    if (available_.empty()) {
++      item.title = @"Check for Updates…";
++    } else if (offered().empty()) {
++      item.title = base::SysUTF8ToNSString("Downloading Plurium " +
++                                           VersionString(available_) + "…");
++    } else {
++      item.title = base::SysUTF8ToNSString("Update to " +
++                                           VersionString(offered()) + "…");
++    }
 +  }
 +
 +  bool started_ = false;
@@ -595,7 +711,11 @@ index 0000000000000..c8722efa9759f
 +  base::RepeatingTimer periodic_checks_;
 +  std::optional<BrewInstall> install_;
 +  Version available_;
++  // The available version once Homebrew has downloaded it.
++  Version ready_;
++  bool downloading_ = false;
 +  std::vector<CheckCallback> pending_callbacks_;
++  std::vector<base::OnceCallback<void(bool)>> download_callbacks_;
 +  PluriumUpdateMenuTarget* __strong menu_target_ = nil;
 +};
 +
@@ -611,20 +731,44 @@ index 0000000000000..c8722efa9759f
 + public:
 +  void CheckForUpdate(StatusCallback status_callback,
 +                      PromoteCallback promote_callback) override {
++    status_callback_ = std::move(status_callback);
 +    promote_callback.Run(PROMOTE_HIDDEN);
-+    status_callback.Run(CHECKING, 0, false, false, std::string(), 0,
-+                        std::u16string());
-+    GetUpdater().Check(
-+        /*user_initiated=*/false,
-+        base::BindOnce(&PluriumVersionUpdater::OnChecked, status_callback));
++    status_callback_.Run(CHECKING, 0, false, false, std::string(), 0,
++                         std::u16string());
++    GetUpdater().Check(/*user_initiated=*/false,
++                       base::BindOnce(&PluriumVersionUpdater::OnChecked,
++                                      weak_factory_.GetWeakPtr()));
 +  }
 +
 +  void PromoteUpdater() override {}
 +
 + private:
-+  static void OnChecked(StatusCallback status_callback, CheckResult result) {
-+    const Updater& updater = GetUpdater();
++  void OnDownloaded(bool success) {
++    if (success) {
++      OnChecked(CheckResult::kAvailable);
++    } else {
++      status_callback_.Run(FAILED_DOWNLOAD, 0, false, false, std::string(), 0,
++                           u"Could not download the update. Plurium tries "
++                           u"again later.");
++    }
++  }
++
++  void OnChecked(CheckResult result) {
++    Updater& updater = GetUpdater();
++    const StatusCallback& status_callback = status_callback_;
 +    const std::string version = VersionString(updater.available());
++    if (result == CheckResult::kAvailable && updater.installed_with_brew() &&
++        updater.offered().empty()) {
++      if (!updater.downloading()) {
++        OnDownloaded(/*success=*/false);
++        return;
++      }
++      status_callback.Run(UPDATING, 0, false, false, version, 0,
++                          std::u16string());
++      updater.OnDownloaded(base::BindOnce(&PluriumVersionUpdater::OnDownloaded,
++                                          weak_factory_.GetWeakPtr()));
++      return;
++    }
 +    switch (result) {
 +      case CheckResult::kFailed:
 +        status_callback.Run(FAILED, 0, false, false, std::string(), 0,
@@ -650,6 +794,9 @@ index 0000000000000..c8722efa9759f
 +        break;
 +    }
 +  }
++
++  StatusCallback status_callback_;
++  base::WeakPtrFactory<PluriumVersionUpdater> weak_factory_{this};
 +};
 +
 +}  // namespace
@@ -659,9 +806,9 @@ index 0000000000000..c8722efa9759f
 +}
 +
 +std::u16string AvailableVersion() {
-+  const Version& available = GetUpdater().available();
-+  return available.empty() ? std::u16string()
-+                           : base::UTF8ToUTF16(VersionString(available));
++  const Version& offered = GetUpdater().offered();
++  return offered.empty() ? std::u16string()
++                         : base::UTF8ToUTF16(VersionString(offered));
 +}
 +
 +void PromptForUpdate() {
@@ -718,7 +865,7 @@ index b65f7932b3e07..406ad95d5d71e 100644
  }
  
 diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
-index d24ed48df718d..6787d6418f373 100644
+index 04bc24ce1d39b..e6371fe5aad8d 100644
 --- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
 +++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
 @@ -17,6 +17,7 @@
@@ -756,7 +903,7 @@ index d24ed48df718d..6787d6418f373 100644
    int pressed_index_ = -1;
    int pressed_button_ = 0;  // ui::EF_*_MOUSE_BUTTON
 diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
-index 76a24e8700348..a6bfd5dff3afb 100644
+index aaf1683d9e598..22ddd387a182d 100644
 --- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
 +++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
 @@ -8,6 +8,7 @@
@@ -765,9 +912,9 @@ index 76a24e8700348..a6bfd5dff3afb 100644
  #include "base/functional/bind.h"
 +#include "base/logging.h"
  #include "cc/paint/paint_flags.h"
- #include "chrome/app/vector_icons/vector_icons.h"
- #include "chrome/browser/ui/color/chrome_color_id.h"
-@@ -24,6 +25,7 @@
+ #include "third_party/skia/include/core/SkPath.h"
+ #include "third_party/skia/include/core/SkPathBuilder.h"
+@@ -29,6 +30,7 @@
  #include "ui/gfx/text_constants.h"
  #include "ui/views/accessibility/view_accessibility.h"
  #include "ui/views/controls/button/image_button.h"
@@ -775,7 +922,7 @@ index 76a24e8700348..a6bfd5dff3afb 100644
  #include "ui/views/controls/image_view.h"
  #include "ui/views/controls/label.h"
  #include "ui/views/controls/throbber.h"
-@@ -286,6 +288,15 @@ UnifiedTabStrip::UnifiedTabStrip(UnifiedTabStripDelegate* delegate)
+@@ -300,6 +302,15 @@ UnifiedTabStrip::UnifiedTabStrip(UnifiedTabStripDelegate* delegate)
    new_tab_button_->SetTooltipText(u"New tab (right click: choose profile)");
    new_tab_button_->GetViewAccessibility().SetName(u"New tab");
    new_tab_button_->set_context_menu_controller(this);
@@ -791,7 +938,7 @@ index 76a24e8700348..a6bfd5dff3afb 100644
    set_context_menu_controller(this);
  }
  
-@@ -322,7 +333,9 @@ int UnifiedTabStrip::NonClientHitTest(const gfx::Point& point_in_parent) const {
+@@ -336,7 +347,9 @@ int UnifiedTabStrip::NonClientHitTest(const gfx::Point& point_in_parent) const {
    if (!GetLocalBounds().Contains(point)) {
      return HTNOWHERE;
    }
@@ -802,7 +949,7 @@ index 76a24e8700348..a6bfd5dff3afb 100644
      return HTCLIENT;
    }
    return HTCAPTION;
-@@ -344,8 +357,11 @@ int UnifiedTabStrip::TabWidth() const {
+@@ -358,8 +371,11 @@ int UnifiedTabStrip::TabWidth() const {
    if (!count) {
      return kTabMaxWidth;
    }
@@ -816,7 +963,7 @@ index 76a24e8700348..a6bfd5dff3afb 100644
    return std::clamp(available / count, kTabMinWidth, kTabMaxWidth);
  }
  
-@@ -388,6 +404,32 @@ void UnifiedTabStrip::Layout(PassKey) {
+@@ -404,6 +420,32 @@ void UnifiedTabStrip::Layout(PassKey) {
        count * tab_width + kNewTabButtonSpacing,
        kTabTopInset + (height() - kTabTopInset - kNewTabButtonSize) / 2,
        kNewTabButtonSize, kNewTabButtonSize);

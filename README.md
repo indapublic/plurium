@@ -3,8 +3,8 @@
 Chromium for macOS where the tabs of **all your profiles** live in one window,
 in one tab strip. Work, personal and side-project accounts stay fully isolated
 (cookies, logins, extensions), but you see and switch between all their tabs at
-once, in any order you like. A small bar at the left of each tab shows its
-profile's theme color.
+once, in any order you like. A small triangle in the top-left corner of each
+tab shows its profile's theme color.
 
 ![Tabs of four profiles in one strip](docs/strip.jpg)
 
@@ -18,11 +18,13 @@ brew trust --cask indapublic/plurium/plurium   # Homebrew 7+ asks to trust third
 brew install --cask indapublic/plurium/plurium
 ```
 
-Plurium updates itself through Homebrew: when a new version is out, an
-**Update** button appears at the end of the tab strip (and *Plurium → Update
+Plurium updates itself through Homebrew: when a new version is out, it is
+downloaded in the background, and then an **Update** button appears at the
+end of the tab strip (and *Plurium → Update
 to …* in the menu bar, and *Relaunch* in *About Plurium*). It relaunches like
-Chrome does after an update — running `brew update` and
-`brew upgrade --cask plurium` in between — and reopens with all your tabs. The check runs a
+Chrome does after an update — installing the downloaded version with
+`brew upgrade --cask plurium` in between, which takes seconds — and reopens
+with all your tabs. The check runs a
 minute after launch and every six hours by downloading the cask file from this
 repository; *Plurium → Check for Updates…* checks right away. To turn the
 automatic checks off:
@@ -38,9 +40,9 @@ The app is signed with a Developer ID and notarized by Apple.
 
 - One window for all profiles: each profile's browser window becomes a tab of
   one native macOS window tab group. Their AppKit tab bar is hidden.
-- One tab strip with the tabs of all profiles, drawn the same way, with a bar
-  in the profile color at the left of each tab (the same strip with a single
-  window).
+- One tab strip with the tabs of all profiles, drawn the same way, with a
+  triangle in the profile color in the top-left corner of each tab (the same
+  strip with a single window).
   Click to switch (profiles switch as needed), drag to reorder anywhere,
   middle-click or × to close.
 - Right-click a tab: Reload, Duplicate, Mute, **Move to profile** (reopens the
