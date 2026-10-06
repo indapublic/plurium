@@ -9,7 +9,9 @@
 #       xcrun notarytool store-credentials plurium --apple-id <apple id> \
 #         --team-id 4WSCP7LMZQ
 #
-# Usage: tools/release.sh [--publish]
+# Usage: tools/release.sh [--publish | --publish-existing]
+#   --publish-existing publishes the DMG an earlier run already built and
+#   notarized (e.g. when only the upload failed).
 #   REVISION=N  release number for the same Chromium version (default 1)
 #   IDENTITY, NOTARY_PROFILE, GH_REPO, ROOT override the defaults below.
 set -euo pipefail
@@ -22,11 +24,17 @@ NOTARY_PROFILE=${NOTARY_PROFILE:-plurium}
 GH_REPO=${GH_REPO:-indapublic/plurium}
 REVISION=${REVISION:-1}
 PUBLISH=0
-[ "${1:-}" = "--publish" ] && PUBLISH=1
+REUSE=0
+case "${1:-}" in
+  --publish) PUBLISH=1 ;;
+  --publish-existing) PUBLISH=1 REUSE=1 ;;
+  "") ;;
+  *) echo "Unknown option: $1"; exit 2 ;;
+esac
 
 step() { echo; echo "=== $*"; }
 
-# Apple's timestamp server occasionally does not answer.
+# Apple's timestamp server and GitHub occasionally do not answer.
 retry() {
   local attempt
   for attempt in 1 2 3; do
@@ -60,6 +68,11 @@ WORK=$OUT/plurium-release
 DMG=$WORK/Plurium-$VERSION-arm64.dmg
 
 step "Plurium $VERSION (Chromium $CHROMIUM_VERSION)"
+if [ "$REUSE" -eq 1 ]; then
+  [ -f "$DMG" ] || { echo "No $DMG to publish: run without --publish-existing"; exit 1; }
+  xcrun stapler validate "$DMG"
+  spctl --assess --type open --context context:primary-signature -v "$DMG"
+else
 [ -x "$OUT/Chromium Packaging/sign_chrome.py" ] ||
   { echo "Build the signing scripts first: autoninja -C out/Release chrome chrome/installer/mac"; exit 1; }
 security find-identity -v -p codesigning | grep -qF "$IDENTITY" ||
@@ -96,6 +109,7 @@ step "Notarize the DMG"
 notarize "$DMG"
 xcrun stapler staple "$DMG"
 spctl --assess --type open --context context:primary-signature -v "$DMG"
+fi
 SHA256=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
 echo "$DMG"
 echo "sha256 $SHA256"
@@ -107,7 +121,10 @@ if [ "$PUBLISH" -eq 0 ]; then
 fi
 
 step "Publish v$VERSION to $GH_REPO"
-gh release create "v$VERSION" "$DMG" --repo "$GH_REPO" --title "Plurium $VERSION" \
+# gh deletes the half-created release when the upload fails, so a retry
+# starts clean.
+retry gh release create "v$VERSION" "$DMG" --repo "$GH_REPO" \
+  --title "Plurium $VERSION" \
   --notes "Plurium $VERSION, based on Chromium $CHROMIUM_VERSION (macOS, Apple Silicon).
 
 Install or update: \`brew upgrade --cask plurium\` (see README)."
