@@ -1,0 +1,756 @@
+From 624fe20217cb85ea3b9b786b58a8008e20b763ac Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Mon, 5 Oct 2026 09:31:44 +1000
+Subject: [PATCH 3/5] Mac: Chrome-style profile switcher instead of AppKit's
+ tab bar
+
+AppKit's tab bar does not fit Chrome's UI, so it is hidden in every
+window of the profile tab group. A tonal Material chip with the
+profile's avatar and name sits right after the traffic lights; it takes
+the profile's theme color and opens a menu of the open profile windows
+(with their Ctrl+N shortcuts). The tab strip leaves room for it through
+the existing caption exclusion, and a hit-test hook keeps clicks on the
+chip from dragging the window. If AppKit's tab bar can't be hidden, the
+previous "profile tabs on top" layout is used as a fallback.
+
+Fullscreen is shared by the whole group, like native window tabs: AppKit
+takes the group fullscreen and each profile window follows when it is
+shown, so Ctrl+N switches profiles inside fullscreen. After a group was
+fullscreen, AppKit tends to put windows straight into fullscreen at the
+next launch; windows therefore can't be fullscreen-primary until they
+have joined the group (or Chromium itself toggles fullscreen on them).
+---
+ .../ui/views/frame/browser_frame_view_mac.mm  |   3 +
+ .../browser/ui/views/frame/profile_tabs_mac.h |  21 +-
+ .../ui/views/frame/profile_tabs_mac.mm        | 416 ++++++++++++++++--
+ 3 files changed, 391 insertions(+), 49 deletions(-)
+
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+index 4b7d632d5ecdf..74bfa0cb27236 100644
+--- a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+@@ -390,6 +390,9 @@ gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
+ }
+ 
+ int BrowserFrameViewMac::NonClientHitTest(const gfx::Point& point) {
++  if (profile_tabs::IsSwitcherAt(GetWidget(), point)) {
++    return HTCLIENT;
++  }
+   int super_component = BrowserFrameView::NonClientHitTest(point);
+   if (super_component != HTNOWHERE) {
+     return super_component;
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.h b/chrome/browser/ui/views/frame/profile_tabs_mac.h
+index a5f6193a119ed..f8c947b3380af 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.h
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.h
+@@ -9,6 +9,7 @@ class BrowserView;
+ struct BrowserLayoutParams;
+ 
+ namespace gfx {
++class Point;
+ class Rect;
+ }
+ 
+@@ -23,24 +24,32 @@ namespace profile_tabs {
+ // profile name. Call once per browser widget after it is initialized; a
+ // normal browser window joins the group the first time it becomes visible.
+ // Other window types (DevTools, popups, apps) are left alone.
++//
++// AppKit's own tab bar is hidden; a Chrome-styled profile switcher chip next
++// to the traffic lights (and Ctrl+1 ... Ctrl+9) switches between the windows.
+ void ObserveBrowserWidget(views::Widget* widget, BrowserView* browser_view);
+ 
+-// Layout while a window shows the native tab bar: the standard AppKit
+-// titlebar and the tab bar sit above the whole browser UI.
++// Layout hooks for BrowserNativeWidgetMac and BrowserFrameViewMac.
+ 
+ // True if the titlebar should keep its default AppKit height instead of
+-// Chromium's tab strip height.
++// Chromium's tab strip height. Only happens when AppKit's tab bar could not
++// be hidden: the browser UI then moves below it.
+ bool UseSystemTitlebar(const views::Widget* widget);
+ 
+-// Moves the top of `bounds` (the client view bounds) below the tab bar.
++// Moves the top of `bounds` (the client view bounds) below AppKit's tab bar
++// in that fallback layout.
+ gfx::Rect AdjustClientBounds(const views::Widget* widget,
+                              const gfx::Rect& bounds);
+ 
+-// Drops the caption button exclusion: the traffic lights are no longer next
+-// to the tab strip.
++// Makes the tab strip leave room for the switcher chip (or, in the fallback
++// layout, drops the traffic light exclusion).
+ void AdjustLayoutParams(const views::Widget* widget,
+                         BrowserLayoutParams& params);
+ 
++// True if `point` (frame view coordinates) is on the switcher chip, so the
++// click must not drag the window.
++bool IsSwitcherAt(const views::Widget* widget, const gfx::Point& point);
++
+ }  // namespace profile_tabs
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_PROFILE_TABS_MAC_H_
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index 3c728ea18ff33..5be55bad16f71 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -9,10 +9,13 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <memory>
++#include <optional>
+ #include <string>
+ #include <utility>
+ #include <vector>
+ 
++#include "base/apple/scoped_objc_class_swizzler.h"
+ #include "base/functional/bind.h"
+ #include "base/logging.h"
+ #include "base/memory/raw_ptr.h"
+@@ -21,11 +24,15 @@
+ #include "base/scoped_observation.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/sys_string_conversions.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "base/task/sequenced_task_runner.h"
++#include "base/time/time.h"
++#include "chrome/app/vector_icons/vector_icons.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_attributes_entry.h"
+ #include "chrome/browser/profiles/profile_attributes_storage.h"
++#include "chrome/browser/profiles/profile_avatar_icon_util.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/profiles/profile_manager_observer.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -33,19 +40,64 @@
+ #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
+ #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
++#include "ui/base/accelerators/accelerator.h"
++#include "ui/base/models/image_model.h"
++#include "ui/base/mojom/menu_source_type.mojom.h"
++#include "ui/base/ui_base_types.h"
++#include "ui/color/color_id.h"
++#include "ui/events/event_constants.h"
++#include "ui/events/keycodes/keyboard_codes.h"
+ #include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/point.h"
+ #include "ui/gfx/geometry/rect.h"
++#include "ui/menus/simple_menu_model.h"
+ #include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
++#include "ui/views/controls/button/md_text_button.h"
++#include "ui/views/controls/menu/menu_runner.h"
++#include "ui/views/controls/menu/menu_types.h"
+ #include "ui/views/widget/widget.h"
+ #include "ui/views/widget/widget_observer.h"
+ #include "ui/views/window/non_client_view.h"
+ 
++namespace profile_tabs {
++namespace {
++void WillToggleFullscreen(NSWindow* window);
++base::apple::ScopedObjCClassSwizzler* g_toggle_fullscreen_swizzler = nullptr;
++}  // namespace
++}  // namespace profile_tabs
++
++// Its -toggleFullScreen: is swapped with NSWindow's, so that a profile window
++// that has not joined the group yet may still go fullscreen when Chromium
++// asks for it (see SetCanBeFullscreenPrimary()).
++@interface ProfileTabsFullscreenInterceptor : NSObject
++- (void)toggleFullScreen:(id)sender;
++@end
++
++@implementation ProfileTabsFullscreenInterceptor
++- (void)toggleFullScreen:(id)sender {
++  // `self` is the NSWindow here.
++  profile_tabs::WillToggleFullscreen(static_cast<NSWindow*>((id)self));
++  profile_tabs::g_toggle_fullscreen_swizzler->InvokeOriginal<void, id>(
++      self, @selector(toggleFullScreen:), sender);
++}
++@end
++
+ namespace profile_tabs {
+ namespace {
+ 
+ // Shared by every window in the profile tab group.
+ NSString* const kTabbingIdentifier = @"org.chromium.profile-tabs";
+ 
++// Profile switcher chip next to the traffic lights.
++constexpr int kSwitcherHeight = 24;
++constexpr int kSwitcherGapAfterTrafficLights = 10;
++constexpr int kAvatarSize = 16;
++constexpr int kMaxTabHotkeys = 9;
++
++// AppKit may add the native tab bar a moment after a window joins a group.
++constexpr int kMaxHideTabBarAttempts = 5;
++constexpr base::TimeDelta kHideTabBarRetryDelay = base::Milliseconds(50);
++
+ class ProfileTabsWindow;
+ 
+ std::vector<ProfileTabsWindow*>& AllWindows() {
+@@ -75,6 +127,22 @@ std::u16string ProfileDisplayName(Profile* profile) {
+   return name;
+ }
+ 
++ui::ImageModel ProfileAvatar(Profile* profile) {
++  if (!profile->IsOffTheRecord() && !profile->IsGuestSession()) {
++    if (ProfileManager* manager = g_browser_process->profile_manager()) {
++      if (ProfileAttributesEntry* entry =
++              manager->GetProfileAttributesStorage()
++                  .GetProfileAttributesWithPath(profile->GetPath())) {
++        return ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
++            entry->GetAvatarIcon(kAvatarSize), kAvatarSize, kAvatarSize,
++            profiles::SHAPE_CIRCLE));
++      }
++    }
++  }
++  return ui::ImageModel::FromVectorIcon(kIncognitoIcon, ui::kColorMenuIcon,
++                                        kAvatarSize);
++}
++
+ // Frontmost visible window that already belongs to the profile tab group.
+ NSWindow* FindGroupWindow(NSWindow* exclude) {
+   for (NSWindow* window in NSApp.orderedWindows) {
+@@ -86,8 +154,40 @@ NSWindow* FindGroupWindow(NSWindow* exclude) {
+   return nil;
+ }
+ 
++bool ContainsNativeTabBar(NSView* view) {
++  if ([NSStringFromClass([view class]) isEqualToString:@"NSTabBar"]) {
++    return true;
++  }
++  for (NSView* subview in view.subviews) {
++    if (ContainsNativeTabBar(subview)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++// Hides AppKit's tab bar; the profile switcher chip replaces it. AppKit hosts
++// the bar in a titlebar accessory of every window in the group. Returns false
++// if no such accessory exists (yet).
++bool HideNativeTabBar(NSWindow* window) {
++  for (NSTitlebarAccessoryViewController* accessory in window
++           .titlebarAccessoryViewControllers) {
++    if (ContainsNativeTabBar(accessory.view)) {
++      accessory.hidden = YES;
++      return true;
++    }
++  }
++  return false;
++}
++
++void SelectTab(NSWindow* window) {
++  window.tabGroup.selectedWindow = window;
++  [window makeKeyAndOrderFront:nil];
++}
++
+ void UpdateAllTitles();
+ void RefreshAllLayouts();
++void PostRefreshAllLayouts();
+ void EnsureWindowNotifications();
+ void EnsureTabHotkeys();
+ 
+@@ -105,6 +205,9 @@ class TitleUpdater : public ProfileAttributesStorage::Observer,
+                             const std::u16string& old_profile_name) override {
+     UpdateAllTitles();
+   }
++  void OnProfileAvatarChanged(const base::FilePath& profile_path) override {
++    UpdateAllTitles();
++  }
+ 
+   // ProfileManagerObserver:
+   void OnProfileManagerDestroying() override {
+@@ -129,12 +232,17 @@ void EnsureTitleUpdater() {
+ // Watches one normal browser widget. The first time it becomes visible the
+ // window joins the profile tab group; later visibility changes (AppKit
+ // switching tabs) are ignored. Owns itself and dies with the widget.
+-class ProfileTabsWindow : public views::WidgetObserver {
++class ProfileTabsWindow : public views::WidgetObserver,
++                          public ui::SimpleMenuModel::Delegate {
+  public:
+   ProfileTabsWindow(views::Widget* widget, BrowserView* browser_view)
+       : widget_(widget), browser_view_(browser_view) {
+     observation_.Observe(widget);
+     AllWindows().push_back(this);
++    // After a tab group was fullscreen, AppKit may put new windows straight
++    // into fullscreen at the next launch. Don't let it until the window has
++    // joined the group (or Chromium itself asks for fullscreen).
++    SetCanBeFullscreenPrimary(false);
+   }
+   ProfileTabsWindow(const ProfileTabsWindow&) = delete;
+   ProfileTabsWindow& operator=(const ProfileTabsWindow&) = delete;
+@@ -146,34 +254,69 @@ class ProfileTabsWindow : public views::WidgetObserver {
+   int ordinal() const { return ordinal_; }
+   bool system_titlebar() const { return system_titlebar_; }
+   NSWindow* ns_window() const { return GetNSWindow(); }
++  const std::u16string& title() const { return title_; }
+ 
+   // Height of the AppKit titlebar plus the native tab bar above the browser
+-  // UI, or 0 when the window uses Chromium's own titlebar layout. Cached so
+-  // it only changes right before a relayout: BrowserView's layout CHECKs
+-  // that its bounds stay inside the client area.
++  // UI, or 0 when the window uses Chromium's own titlebar layout. Only used
++  // when the native tab bar could not be hidden. Cached so it only changes
++  // right before a relayout: BrowserView's layout CHECKs that its bounds stay
++  // inside the client area.
+   int TopInset() const { return system_titlebar_ ? top_inset_ : 0; }
+ 
++  // Bounds of the visible profile switcher chip in frame view coordinates.
++  std::optional<gfx::Rect> SwitcherBounds() const {
++    if (!switcher_ || !switcher_->GetVisible()) {
++      return std::nullopt;
++    }
++    return switcher_->bounds();
++  }
++
+   // AppKit fullscreen transitions: Chromium defers its own layout until they
+   // finish, so don't switch layouts in the middle of one.
+   void SetFullscreenTransition(bool in_transition, bool entering) {
+     fullscreen_transition_ = in_transition;
++    const bool fullscreen =
++        GetNSWindow().styleMask & NSWindowStyleMaskFullScreen;
++    if (!in_transition && !fullscreen && attach_after_fullscreen_) {
++      PostAttach();
++    }
+     if (in_transition && entering) {
+       // Fullscreen uses Chromium's own (immersive) layout.
++      ShowSwitcher(false);
+       ApplyLayout(false, /*refresh_titlebar=*/false);
+     }
+   }
+ 
+-  // Switches between Chromium's titlebar layout and the "profile tabs on top"
+-  // layout whenever the native tab bar appears or disappears.
++  // Hides the native tab bar and shows the profile switcher whenever the
++  // window shares a group with other windows.
+   void RefreshLayout() {
+     NSWindow* window = GetNSWindow();
+     if (!window || widget_->IsClosed() || fullscreen_transition_) {
+       return;
+     }
+     const bool fullscreen = window.styleMask & NSWindowStyleMaskFullScreen;
+-    const bool wanted =
+-        attached_ && !fullscreen && window.tabGroup.windows.count > 1;
+-    ApplyLayout(wanted, /*refresh_titlebar=*/!fullscreen);
++    const bool grouped = attached_ && window.tabGroup.windows.count > 1;
++    // AppKit shows the tab bar in the selected window only; background tabs
++    // get theirs (and hide it here) when they are selected.
++    const bool tab_bar_hidden =
++        grouped && (HideNativeTabBar(window) ||
++                    window.tabGroup.selectedWindow != window);
++    if (grouped && !tab_bar_hidden &&
++        hide_tab_bar_attempts_ < kMaxHideTabBarAttempts) {
++      ++hide_tab_bar_attempts_;
++      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++          FROM_HERE,
++          base::BindOnce(&ProfileTabsWindow::RefreshLayout,
++                         weak_factory_.GetWeakPtr()),
++          kHideTabBarRetryDelay);
++      return;
++    }
++    hide_tab_bar_attempts_ = 0;
++    // Fallback if AppKit's tab bar can't be hidden: put the browser UI below
++    // it instead of under it.
++    ApplyLayout(grouped && !tab_bar_hidden && !fullscreen,
++                /*refresh_titlebar=*/!fullscreen);
++    ShowSwitcher(grouped && tab_bar_hidden && !fullscreen);
+   }
+ 
+   void UpdateTitle() {
+@@ -181,11 +324,17 @@ class ProfileTabsWindow : public views::WidgetObserver {
+     if (!window) {
+       return;
+     }
+-    std::u16string title = ProfileDisplayName(profile());
++    title_ = ProfileDisplayName(profile());
+     if (ordinal_ > 1) {
+-      title += u" " + base::NumberToString16(ordinal_);
++      title_ += u" " + base::NumberToString16(ordinal_);
++    }
++    window.tab.title = base::SysUTF16ToNSString(title_);
++    if (switcher_) {
++      switcher_->SetText(title_);
++      switcher_->SetImageModel(views::Button::STATE_NORMAL,
++                               ProfileAvatar(profile()));
++      LayoutSwitcher();
+     }
+-    window.tab.title = base::SysUTF16ToNSString(title);
+   }
+ 
+   // views::WidgetObserver:
+@@ -193,15 +342,39 @@ class ProfileTabsWindow : public views::WidgetObserver {
+     if (!visible || attach_posted_ || handled_) {
+       return;
+     }
+-    attach_posted_ = true;
+-    // Regroup after AppKit has finished ordering the window in.
+-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+-        FROM_HERE, base::BindOnce(&ProfileTabsWindow::Attach,
+-                                  weak_factory_.GetWeakPtr()));
++    PostAttach();
+   }
+ 
+   void OnWidgetDestroying(views::Widget* widget) override { delete this; }
+ 
++  // Called right before -toggleFullScreen:. AppKit makes the whole tab group
++  // fullscreen; each profile window follows (Chromium updates its own
++  // fullscreen state) as it is shown in the fullscreen space.
++  void WillToggleFullscreen() { SetCanBeFullscreenPrimary(true); }
++
++  // ui::SimpleMenuModel::Delegate (the switcher menu; command id = tab index):
++  bool IsCommandIdChecked(int command_id) const override {
++    NSArray<NSWindow*>* tabs = GetNSWindow().tabGroup.windows;
++    return static_cast<NSUInteger>(command_id) < tabs.count &&
++           tabs[command_id] == GetNSWindow();
++  }
++  bool GetAcceleratorForCommandId(int command_id,
++                                  ui::Accelerator* accelerator) const override {
++    if (command_id >= kMaxTabHotkeys) {
++      return false;
++    }
++    *accelerator = ui::Accelerator(
++        static_cast<ui::KeyboardCode>(ui::VKEY_1 + command_id),
++        ui::EF_CONTROL_DOWN);
++    return true;
++  }
++  void ExecuteCommand(int command_id, int event_flags) override {
++    NSArray<NSWindow*>* tabs = GetNSWindow().tabGroup.windows;
++    if (static_cast<NSUInteger>(command_id) < tabs.count) {
++      SelectTab(tabs[command_id]);
++    }
++  }
++
+  private:
+   NSWindow* GetNSWindow() const {
+     auto* host = views::NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+@@ -209,6 +382,30 @@ class ProfileTabsWindow : public views::WidgetObserver {
+     return host ? host->GetInProcessNSWindow() : nil;
+   }
+ 
++  void SetCanBeFullscreenPrimary(bool can) {
++    NSWindow* window = GetNSWindow();
++    if (!window) {
++      return;
++    }
++    NSWindowCollectionBehavior behavior = window.collectionBehavior;
++    if (can) {
++      behavior = (behavior & ~NSWindowCollectionBehaviorFullScreenNone) |
++                 NSWindowCollectionBehaviorFullScreenPrimary;
++    } else {
++      behavior = (behavior & ~NSWindowCollectionBehaviorFullScreenPrimary) |
++                 NSWindowCollectionBehaviorFullScreenNone;
++    }
++    window.collectionBehavior = behavior;
++  }
++
++  void PostAttach() {
++    attach_posted_ = true;
++    // Regroup after AppKit has finished ordering the window in.
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&ProfileTabsWindow::Attach,
++                                  weak_factory_.GetWeakPtr()));
++  }
++
+   // 1 for the first window of a profile, 2 for the second one, and so on.
+   int NextOrdinal() const {
+     int ordinal = 1;
+@@ -220,6 +417,14 @@ class ProfileTabsWindow : public views::WidgetObserver {
+     return ordinal;
+   }
+ 
++  void Relayout() {
++    // The frame view positions the client view (BrowserView); BrowserView
++    // reads the caption exclusion that makes room for the switcher.
++    widget_->non_client_view()->frame_view()->InvalidateLayout();
++    browser_view_->InvalidateLayout();
++    widget_->LayoutRootViewIfNecessary();
++  }
++
+   void ApplyLayout(bool system_titlebar, bool refresh_titlebar) {
+     NSWindow* window = GetNSWindow();
+     if (!window || system_titlebar == system_titlebar_) {
+@@ -241,37 +446,121 @@ class ProfileTabsWindow : public views::WidgetObserver {
+                      ? std::max(0.0, NSHeight(window.frame) -
+                                          NSMaxY(window.contentLayoutRect))
+                      : 0;
+-    // The frame view positions the client view (BrowserView).
+-    widget_->non_client_view()->frame_view()->InvalidateLayout();
+-    widget_->LayoutRootViewIfNecessary();
+-    VLOG(1) << "profile tabs: " << base::SysNSStringToUTF8(window.tab.title)
+-            << (system_titlebar_ ? " tab bar layout, top inset "
++    Relayout();
++    VLOG(1) << "profile tabs: " << base::UTF16ToUTF8(title_)
++            << (system_titlebar_ ? " native tab bar layout, top inset "
+                                  : " default layout ")
+             << top_inset_;
+   }
+ 
++  void ShowSwitcher(bool show) {
++    if (show && !switcher_) {
++      auto chip = std::make_unique<views::MdTextButton>(
++          base::BindRepeating(&ProfileTabsWindow::ShowSwitcherMenu,
++                              base::Unretained(this)),
++          title_);
++      chip->SetStyle(ui::ButtonStyle::kTonal);
++      chip->SetCornerRadius(kSwitcherHeight / 2.0f);
++      chip->SetCustomPadding(gfx::Insets::VH(0, 10));
++      chip->SetImageModel(views::Button::STATE_NORMAL,
++                          ProfileAvatar(profile()));
++      chip->SetTooltipText(u"Switch profile (Control-1 to Control-9)");
++      chip->SetVisible(false);
++      switcher_ =
++          widget_->non_client_view()->frame_view()->AddChildView(
++              std::move(chip));
++    }
++    if (!switcher_ || switcher_->GetVisible() == show) {
++      return;
++    }
++    switcher_->SetVisible(show);
++    LayoutSwitcher();
++    VLOG(1) << "profile tabs: " << base::UTF16ToUTF8(title_)
++            << (show ? " switcher shown at " + switcher_->bounds().ToString()
++                     : std::string(" switcher hidden"));
++  }
++
++  // Puts the chip right after the traffic lights, vertically centered on
++  // them, and makes the tab strip leave room for it.
++  void LayoutSwitcher() {
++    NSWindow* window = GetNSWindow();
++    if (!switcher_ || !window) {
++      return;
++    }
++    gfx::Size size = switcher_->GetPreferredSize();
++    size.set_height(kSwitcherHeight);
++    NSButton* close = [window standardWindowButton:NSWindowCloseButton];
++    NSButton* zoom = [window standardWindowButton:NSWindowZoomButton];
++    int x = 80;
++    int center_y = 20;
++    if (close && zoom) {
++      const CGFloat height = NSHeight(window.contentView.bounds);
++      x = NSMaxX([zoom convertRect:zoom.bounds toView:nil]) +
++          kSwitcherGapAfterTrafficLights;
++      center_y = height - NSMidY([close convertRect:close.bounds toView:nil]);
++    }
++    switcher_->SetBoundsRect(
++        gfx::Rect(gfx::Point(x, center_y - size.height() / 2), size));
++    Relayout();
++  }
++
++  void ShowSwitcherMenu() {
++    NSArray<NSWindow*>* tabs = GetNSWindow().tabGroup.windows;
++    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
++    for (NSUInteger i = 0; i < tabs.count; ++i) {
++      ProfileTabsWindow* tab = nullptr;
++      for (ProfileTabsWindow* window : AllWindows()) {
++        if (window->ns_window() == tabs[i]) {
++          tab = window;
++        }
++      }
++      menu_model_->AddCheckItem(
++          static_cast<int>(i),
++          tab ? tab->title() : base::SysNSStringToUTF16(tabs[i].tab.title));
++      if (tab) {
++        menu_model_->SetIcon(menu_model_->GetItemCount() - 1,
++                             ProfileAvatar(tab->profile()));
++      }
++    }
++    menu_runner_ = std::make_unique<views::MenuRunner>(menu_model_.get(),
++                                                       /*run_types=*/0);
++    menu_runner_->RunMenuAt(widget_, nullptr, switcher_->GetBoundsInScreen(),
++                            views::MenuAnchorPosition::kTopLeft,
++                            ui::mojom::MenuSourceType::kMouse);
++  }
++
+   void Attach() {
+     attach_posted_ = false;
+     NSWindow* window = GetNSWindow();
+     if (!window || widget_->IsClosed() || !widget_->IsVisible()) {
+       return;
+     }
++    attach_after_fullscreen_ = false;
++    if (fullscreen_transition_ ||
++        (window.styleMask & NSWindowStyleMaskFullScreen)) {
++      // E.g. a window restored in fullscreen: it stays fullscreen on its own
++      // and joins the group once it leaves fullscreen.
++      attach_after_fullscreen_ = true;
++      VLOG(1) << "profile tabs: fullscreen window joins the group later";
++      return;
++    }
+     if (TabDragController::IsActive()) {
+       // The window was torn off a tab strip and is following the mouse.
+       // Leave it as a separate window.
+       handled_ = true;
++      SetCanBeFullscreenPrimary(true);
+       VLOG(1) << "profile tabs: skip window created by a tab drag";
+       return;
+     }
+ 
+     handled_ = true;
+     attached_ = true;
++    SetCanBeFullscreenPrimary(true);
+     ordinal_ = NextOrdinal();
+     window.tabbingIdentifier = kTabbingIdentifier;
+     window.tabbingMode = NSWindowTabbingModePreferred;
+     UpdateTitle();
+     EnsureTitleUpdater();
+-
+     EnsureWindowNotifications();
+     EnsureTabHotkeys();
+     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+@@ -279,8 +568,7 @@ class ProfileTabsWindow : public views::WidgetObserver {
+ 
+     NSWindow* group_window = FindGroupWindow(window);
+     if (!group_window) {
+-      VLOG(1) << "profile tabs: first window "
+-              << base::SysNSStringToUTF8(window.tab.title);
++      VLOG(1) << "profile tabs: first window " << base::UTF16ToUTF8(title_);
+       return;
+     }
+     // Append to the end of the group so tab positions stay stable. Keep the
+@@ -296,14 +584,15 @@ class ProfileTabsWindow : public views::WidgetObserver {
+     } else if (selected) {
+       group.selectedWindow = selected;
+     }
+-    VLOG(1) << "profile tabs: attached "
+-            << base::SysNSStringToUTF8(window.tab.title) << ", group size "
+-            << window.tabGroup.windows.count;
++    VLOG(1) << "profile tabs: attached " << base::UTF16ToUTF8(title_)
++            << ", group size " << window.tabGroup.windows.count;
+   }
+ 
+   raw_ptr<views::Widget> widget_;
+   raw_ptr<BrowserView> browser_view_;
++  std::u16string title_;
+   bool attach_posted_ = false;
++  bool attach_after_fullscreen_ = false;
+   // Set once the window was either attached or deliberately left alone.
+   bool handled_ = false;
+   bool attached_ = false;
+@@ -311,6 +600,11 @@ class ProfileTabsWindow : public views::WidgetObserver {
+   bool fullscreen_transition_ = false;
+   int top_inset_ = 0;
+   int ordinal_ = 0;
++  int hide_tab_bar_attempts_ = 0;
++  // Owned by the frame view.
++  raw_ptr<views::MdTextButton> switcher_ = nullptr;
++  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
++  std::unique_ptr<views::MenuRunner> menu_runner_;
+   base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
+       this};
+   base::WeakPtrFactory<ProfileTabsWindow> weak_factory_{this};
+@@ -343,6 +637,12 @@ ProfileTabsWindow* FindWindowForNSWindow(id ns_window) {
+   return nullptr;
+ }
+ 
++void WillToggleFullscreen(NSWindow* ns_window) {
++  if (ProfileTabsWindow* window = FindWindowForNSWindow(ns_window)) {
++    window->WillToggleFullscreen();
++  }
++}
++
+ void PostRefreshAllLayouts() {
+   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+       FROM_HERE, base::BindOnce(&RefreshAllLayouts));
+@@ -364,13 +664,22 @@ void EnsureWindowNotifications() {
+     return;
+   }
+   installed = true;
+-  for (NSNotificationName name in @[
+-         NSWindowDidBecomeKeyNotification, NSWindowWillCloseNotification
+-       ]) {
+-    ObserveNotification(name, ^(NSNotification*) {
+-      PostRefreshAllLayouts();
+-    });
+-  }
++  g_toggle_fullscreen_swizzler = new base::apple::ScopedObjCClassSwizzler(
++      [NativeWidgetMacNSWindow class], [ProfileTabsFullscreenInterceptor class],
++      @selector(toggleFullScreen:));
++  ObserveNotification(NSWindowDidBecomeKeyNotification,
++                      ^(NSNotification* notification) {
++                        // Hide the native tab bar of a newly selected tab
++                        // right away, before it gets painted.
++                        if (auto* window =
++                                FindWindowForNSWindow(notification.object)) {
++                          window->RefreshLayout();
++                        }
++                        PostRefreshAllLayouts();
++                      });
++  ObserveNotification(NSWindowWillCloseNotification, ^(NSNotification*) {
++    PostRefreshAllLayouts();
++  });
+   ObserveNotification(NSWindowWillEnterFullScreenNotification,
+                       ^(NSNotification* notification) {
+                         if (auto* window =
+@@ -410,7 +719,8 @@ bool HandleTabHotkey(NSEvent* event) {
+     return false;
+   }
+   // {digit row, keypad} key codes for 1 ... 9.
+-  static constexpr std::array<std::pair<unsigned short, unsigned short>, 9>
++  static constexpr std::array<std::pair<unsigned short, unsigned short>,
++                              kMaxTabHotkeys>
+       kKeys = {{{kVK_ANSI_1, kVK_ANSI_Keypad1},
+                 {kVK_ANSI_2, kVK_ANSI_Keypad2},
+                 {kVK_ANSI_3, kVK_ANSI_Keypad3},
+@@ -442,8 +752,7 @@ bool HandleTabHotkey(NSEvent* event) {
+   if (index >= tabs.count) {
+     return false;
+   }
+-  window.tabGroup.selectedWindow = tabs[index];
+-  [tabs[index] makeKeyAndOrderFront:nil];
++  SelectTab(tabs[index]);
+   return true;
+ }
+ 
+@@ -479,6 +788,7 @@ void ObserveBrowserWidget(views::Widget* widget, BrowserView* browser_view) {
+   if (FindWindow(widget)) {
+     return;
+   }
++  EnsureWindowNotifications();
+   new ProfileTabsWindow(widget, browser_view);  // Owns itself.
+ }
+ 
+@@ -500,13 +810,33 @@ gfx::Rect AdjustClientBounds(const views::Widget* widget,
+ 
+ void AdjustLayoutParams(const views::Widget* widget,
+                         BrowserLayoutParams& params) {
+-  if (!UseSystemTitlebar(widget)) {
++  ProfileTabsWindow* window = FindWindow(widget);
++  if (!window) {
+     return;
+   }
+-  params.leading_exclusion.content.set_width(0);
+-  params.leading_exclusion.horizontal_padding = 0;
+-  params.trailing_exclusion.content.set_width(0);
+-  params.trailing_exclusion.horizontal_padding = 0;
++  if (window->system_titlebar()) {
++    // The traffic lights sit above the tab strip, not next to it.
++    params.leading_exclusion.content.set_width(0);
++    params.leading_exclusion.horizontal_padding = 0;
++    params.trailing_exclusion.content.set_width(0);
++    params.trailing_exclusion.horizontal_padding = 0;
++    return;
++  }
++  if (std::optional<gfx::Rect> switcher = window->SwitcherBounds()) {
++    // Keep the tab strip clear of the switcher chip.
++    gfx::SizeF& content = params.leading_exclusion.content;
++    content.set_width(std::max<float>(
++        content.width(), switcher->right() - params.visual_client_area.x()));
++    content.set_height(std::max<float>(
++        content.height(), switcher->bottom() - params.visual_client_area.y()));
++  }
++}
++
++bool IsSwitcherAt(const views::Widget* widget, const gfx::Point& point) {
++  ProfileTabsWindow* window = FindWindow(widget);
++  std::optional<gfx::Rect> switcher =
++      window ? window->SwitcherBounds() : std::nullopt;
++  return switcher && switcher->Contains(point);
+ }
+ 
+ }  // namespace profile_tabs
+-- 
+2.56.0
+

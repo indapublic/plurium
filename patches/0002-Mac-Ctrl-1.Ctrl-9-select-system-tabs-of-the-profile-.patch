@@ -1,0 +1,121 @@
+From ed4fed29dcba29c5e9783c5fef175ba4f43446dc Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Mon, 5 Oct 2026 07:47:42 +1000
+Subject: [PATCH 2/5] Mac: Ctrl+1...Ctrl+9 select system tabs of the profile
+ tab group
+
+A local NSEvent monitor selects the N-th system tab of the profile tab
+group, like Cmd+1...Cmd+9 do for tabs in the tab strip. It matches key
+codes (digit row and keypad), so it works with any keyboard layout, and
+only consumes the event when that tab exists. Chrome's own shortcuts are
+unchanged; Chrome does not use Ctrl+digit on Mac.
+---
+ .../ui/views/frame/profile_tabs_mac.mm        | 67 +++++++++++++++++++
+ 1 file changed, 67 insertions(+)
+
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index 7b0bb0f67efd5..3c728ea18ff33 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -4,10 +4,13 @@
+ 
+ #import "chrome/browser/ui/views/frame/profile_tabs_mac.h"
+ 
++#include <Carbon/Carbon.h>  // For kVK_* key codes.
+ #import <Cocoa/Cocoa.h>
+ 
+ #include <algorithm>
++#include <array>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include "base/functional/bind.h"
+@@ -86,6 +89,7 @@ NSWindow* FindGroupWindow(NSWindow* exclude) {
+ void UpdateAllTitles();
+ void RefreshAllLayouts();
+ void EnsureWindowNotifications();
++void EnsureTabHotkeys();
+ 
+ // Keeps system tab titles in sync with profile names.
+ class TitleUpdater : public ProfileAttributesStorage::Observer,
+@@ -269,6 +273,7 @@ class ProfileTabsWindow : public views::WidgetObserver {
+     EnsureTitleUpdater();
+ 
+     EnsureWindowNotifications();
++    EnsureTabHotkeys();
+     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+         FROM_HERE, base::BindOnce(&RefreshAllLayouts));
+ 
+@@ -393,6 +398,68 @@ void EnsureWindowNotifications() {
+   }
+ }
+ 
++// Ctrl+1 ... Ctrl+9 select the N-th system tab of the profile tab group, like
++// Cmd+1 ... Cmd+9 do for tabs in the tab strip. Chrome itself does not use
++// Ctrl+digit on Mac. Key codes keep this independent of the keyboard layout.
++bool HandleTabHotkey(NSEvent* event) {
++  const NSEventModifierFlags modifiers =
++      event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask &
++      ~(NSEventModifierFlagCapsLock | NSEventModifierFlagNumericPad |
++        NSEventModifierFlagFunction);
++  if (modifiers != NSEventModifierFlagControl) {
++    return false;
++  }
++  // {digit row, keypad} key codes for 1 ... 9.
++  static constexpr std::array<std::pair<unsigned short, unsigned short>, 9>
++      kKeys = {{{kVK_ANSI_1, kVK_ANSI_Keypad1},
++                {kVK_ANSI_2, kVK_ANSI_Keypad2},
++                {kVK_ANSI_3, kVK_ANSI_Keypad3},
++                {kVK_ANSI_4, kVK_ANSI_Keypad4},
++                {kVK_ANSI_5, kVK_ANSI_Keypad5},
++                {kVK_ANSI_6, kVK_ANSI_Keypad6},
++                {kVK_ANSI_7, kVK_ANSI_Keypad7},
++                {kVK_ANSI_8, kVK_ANSI_Keypad8},
++                {kVK_ANSI_9, kVK_ANSI_Keypad9}}};
++  NSUInteger index = 0;
++  for (const auto& [digit, keypad] : kKeys) {
++    if (event.keyCode == digit || event.keyCode == keypad) {
++      break;
++    }
++    ++index;
++  }
++  if (index == kKeys.size()) {
++    return false;
++  }
++  // Bubbles and the omnibox popup are child windows of the browser window.
++  NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
++  while (window.parentWindow) {
++    window = window.parentWindow;
++  }
++  if (![window.tabbingIdentifier isEqualToString:kTabbingIdentifier]) {
++    return false;
++  }
++  NSArray<NSWindow*>* tabs = window.tabGroup.windows;
++  if (index >= tabs.count) {
++    return false;
++  }
++  window.tabGroup.selectedWindow = tabs[index];
++  [tabs[index] makeKeyAndOrderFront:nil];
++  return true;
++}
++
++void EnsureTabHotkeys() {
++  static id monitor = nil;
++  if (monitor) {
++    return;
++  }
++  monitor = [NSEvent
++      addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
++                                   handler:^NSEvent*(NSEvent* event) {
++                                     return HandleTabHotkey(event) ? nil
++                                                                   : event;
++                                   }];
++}
++
+ ProfileTabsWindow* FindWindow(const views::Widget* widget) {
+   for (ProfileTabsWindow* window : AllWindows()) {
+     if (window->widget() == widget) {
+-- 
+2.56.0
+

@@ -1,0 +1,609 @@
+From 89d6b60440cd977747f3ea9387e7d3c1c1c0cc3a Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Mon, 5 Oct 2026 07:44:30 +1000
+Subject: [PATCH 1/5] Mac: join profile windows into one native window tab
+ group
+
+Normal browser windows of all profiles (incognito included) are added to
+one NSWindow tab group with explicit -addTabbedWindow:ordered:; the
+global allowsAutomaticWindowTabbing stays off. Each system tab is titled
+with the profile name from ProfileAttributesStorage ("Name (Incognito)",
+"Name 2" for extra windows) and follows profile renames. DevTools,
+popups, app windows and windows torn off a tab strip are left alone.
+
+While a window shows the native tab bar, the browser UI moves below the
+standard titlebar and the tab bar ("profile tabs on top"); fullscreen
+keeps Chromium's own layout.
+
+All logic lives in profile_tabs_mac.{h,mm}; existing files only get
+short hooks in BrowserNativeWidgetMac and BrowserFrameViewMac.
+---
+ chrome/browser/ui/BUILD.gn                    |   2 +
+ .../ui/views/frame/browser_frame_view_mac.mm  |   4 +-
+ .../views/frame/browser_native_widget_mac.mm  |   7 +
+ .../browser/ui/views/frame/profile_tabs_mac.h |  46 ++
+ .../ui/views/frame/profile_tabs_mac.mm        | 445 ++++++++++++++++++
+ 5 files changed, 503 insertions(+), 1 deletion(-)
+ create mode 100644 chrome/browser/ui/views/frame/profile_tabs_mac.h
+ create mode 100644 chrome/browser/ui/views/frame/profile_tabs_mac.mm
+
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+index 0ab25c63c9f39..a577cf07e7a31 100644
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -2330,6 +2330,8 @@ static_library("ui") {
+       "views/frame/immersive_mode_controller_mac.mm",
+       "views/frame/immersive_mode_overlay_views_mac.h",
+       "views/frame/immersive_mode_overlay_views_mac.mm",
++      "views/frame/profile_tabs_mac.h",
++      "views/frame/profile_tabs_mac.mm",
+     ]
+ 
+     deps += [
+diff --git a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+index 39c36aab3c4d2..4b7d632d5ecdf 100644
+--- a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+@@ -38,6 +38,7 @@
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
++#import "chrome/browser/ui/views/frame/profile_tabs_mac.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/tabs/tab_strip.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+@@ -238,6 +239,7 @@ BrowserLayoutParams BrowserFrameViewMac::GetBrowserLayoutParams() const {
+     params.trailing_exclusion.content.set_width(0);
+     params.trailing_exclusion.horizontal_padding = 0;
+   }
++  profile_tabs::AdjustLayoutParams(GetWidget(), params);
+   return params;
+ }
+ 
+@@ -367,7 +369,7 @@ gfx::RoundedCornersF BrowserFrameViewMac::GetWindowRoundedCorners() const {
+ // BrowserFrameViewMac, views::FrameView implementation:
+ 
+ gfx::Rect BrowserFrameViewMac::GetBoundsForClientView() const {
+-  return bounds();
++  return profile_tabs::AdjustClientBounds(GetWidget(), bounds());
+ }
+ 
+ gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+index fb1e87f834934..98c24a177299f 100644
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+@@ -42,6 +42,7 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
++#import "chrome/browser/ui/views/frame/profile_tabs_mac.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_utils.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+@@ -264,6 +265,11 @@ int32_t BrowserNativeWidgetMac::SheetOffsetY() {
+ void BrowserNativeWidgetMac::GetWindowFrameTitlebarHeight(
+     bool* override_titlebar_height,
+     float* titlebar_height) {
++  if (profile_tabs::UseSystemTitlebar(GetWidget())) {
++    *override_titlebar_height = false;
++    *titlebar_height = 0;
++    return;
++  }
+   if (browser_view_ && browser_view_->browser_widget() &&
+       browser_view_->browser_widget()->GetFrameView()) {
+     *override_titlebar_height = true;
+@@ -790,6 +796,7 @@ void BrowserNativeWidgetMac::OnWidgetInitDone() {
+     UpdateGlassEligibility(
+         glass_frame_service->IsBrowserWindowEligible(browser_view_->browser()));
+   }
++  profile_tabs::ObserveBrowserWidget(GetWidget(), browser_view_);
+ }
+ 
+ void BrowserNativeWidgetMac::OnWidgetThemeChanged(views::Widget* widget) {
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.h b/chrome/browser/ui/views/frame/profile_tabs_mac.h
+new file mode 100644
+index 0000000000000..a5f6193a119ed
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.h
+@@ -0,0 +1,46 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CHROME_BROWSER_UI_VIEWS_FRAME_PROFILE_TABS_MAC_H_
++#define CHROME_BROWSER_UI_VIEWS_FRAME_PROFILE_TABS_MAC_H_
++
++class BrowserView;
++struct BrowserLayoutParams;
++
++namespace gfx {
++class Rect;
++}
++
++namespace views {
++class Widget;
++}
++
++namespace profile_tabs {
++
++// Joins the normal browser windows of all profiles into one native macOS
++// window tab group: one system tab per browser window, titled with the
++// profile name. Call once per browser widget after it is initialized; a
++// normal browser window joins the group the first time it becomes visible.
++// Other window types (DevTools, popups, apps) are left alone.
++void ObserveBrowserWidget(views::Widget* widget, BrowserView* browser_view);
++
++// Layout while a window shows the native tab bar: the standard AppKit
++// titlebar and the tab bar sit above the whole browser UI.
++
++// True if the titlebar should keep its default AppKit height instead of
++// Chromium's tab strip height.
++bool UseSystemTitlebar(const views::Widget* widget);
++
++// Moves the top of `bounds` (the client view bounds) below the tab bar.
++gfx::Rect AdjustClientBounds(const views::Widget* widget,
++                             const gfx::Rect& bounds);
++
++// Drops the caption button exclusion: the traffic lights are no longer next
++// to the tab strip.
++void AdjustLayoutParams(const views::Widget* widget,
++                        BrowserLayoutParams& params);
++
++}  // namespace profile_tabs
++
++#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_PROFILE_TABS_MAC_H_
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+new file mode 100644
+index 0000000000000..7b0bb0f67efd5
+--- /dev/null
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -0,0 +1,445 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#import "chrome/browser/ui/views/frame/profile_tabs_mac.h"
++
++#import <Cocoa/Cocoa.h>
++
++#include <algorithm>
++#include <string>
++#include <vector>
++
++#include "base/functional/bind.h"
++#include "base/logging.h"
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/no_destructor.h"
++#include "base/scoped_observation.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/sys_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "chrome/browser/browser_process.h"
++#include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/profiles/profile_attributes_entry.h"
++#include "chrome/browser/profiles/profile_attributes_storage.h"
++#include "chrome/browser/profiles/profile_manager.h"
++#include "chrome/browser/profiles/profile_manager_observer.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
++#include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
++#import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
++#include "ui/views/widget/widget.h"
++#include "ui/views/widget/widget_observer.h"
++#include "ui/views/window/non_client_view.h"
++
++namespace profile_tabs {
++namespace {
++
++// Shared by every window in the profile tab group.
++NSString* const kTabbingIdentifier = @"org.chromium.profile-tabs";
++
++class ProfileTabsWindow;
++
++std::vector<ProfileTabsWindow*>& AllWindows() {
++  static base::NoDestructor<std::vector<ProfileTabsWindow*>> windows;
++  return *windows;
++}
++
++std::u16string ProfileDisplayName(Profile* profile) {
++  if (profile->IsGuestSession()) {
++    return u"Guest";
++  }
++  Profile* original = profile->GetOriginalProfile();
++  std::u16string name;
++  if (ProfileManager* manager = g_browser_process->profile_manager()) {
++    if (ProfileAttributesEntry* entry =
++            manager->GetProfileAttributesStorage()
++                .GetProfileAttributesWithPath(original->GetPath())) {
++      name = entry->GetName();
++    }
++  }
++  if (name.empty()) {
++    name = original->GetPath().BaseName().LossyDisplayName();
++  }
++  if (profile->IsOffTheRecord()) {
++    name += u" (Incognito)";
++  }
++  return name;
++}
++
++// Frontmost visible window that already belongs to the profile tab group.
++NSWindow* FindGroupWindow(NSWindow* exclude) {
++  for (NSWindow* window in NSApp.orderedWindows) {
++    if (window != exclude && window.visible && !window.miniaturized &&
++        [window.tabbingIdentifier isEqualToString:kTabbingIdentifier]) {
++      return window;
++    }
++  }
++  return nil;
++}
++
++void UpdateAllTitles();
++void RefreshAllLayouts();
++void EnsureWindowNotifications();
++
++// Keeps system tab titles in sync with profile names.
++class TitleUpdater : public ProfileAttributesStorage::Observer,
++                     public ProfileManagerObserver {
++ public:
++  explicit TitleUpdater(ProfileManager* manager) {
++    storage_observation_.Observe(&manager->GetProfileAttributesStorage());
++    manager_observation_.Observe(manager);
++  }
++
++  // ProfileAttributesStorage::Observer:
++  void OnProfileNameChanged(const base::FilePath& profile_path,
++                            const std::u16string& old_profile_name) override {
++    UpdateAllTitles();
++  }
++
++  // ProfileManagerObserver:
++  void OnProfileManagerDestroying() override {
++    storage_observation_.Reset();
++    manager_observation_.Reset();
++  }
++
++ private:
++  base::ScopedObservation<ProfileAttributesStorage,
++                          ProfileAttributesStorage::Observer>
++      storage_observation_{this};
++  base::ScopedObservation<ProfileManager, ProfileManagerObserver>
++      manager_observation_{this};
++};
++
++void EnsureTitleUpdater() {
++  if (ProfileManager* manager = g_browser_process->profile_manager()) {
++    static base::NoDestructor<TitleUpdater> updater(manager);
++  }
++}
++
++// Watches one normal browser widget. The first time it becomes visible the
++// window joins the profile tab group; later visibility changes (AppKit
++// switching tabs) are ignored. Owns itself and dies with the widget.
++class ProfileTabsWindow : public views::WidgetObserver {
++ public:
++  ProfileTabsWindow(views::Widget* widget, BrowserView* browser_view)
++      : widget_(widget), browser_view_(browser_view) {
++    observation_.Observe(widget);
++    AllWindows().push_back(this);
++  }
++  ProfileTabsWindow(const ProfileTabsWindow&) = delete;
++  ProfileTabsWindow& operator=(const ProfileTabsWindow&) = delete;
++  ~ProfileTabsWindow() override { std::erase(AllWindows(), this); }
++
++  views::Widget* widget() const { return widget_; }
++  Profile* profile() const { return browser_view_->browser()->GetProfile(); }
++  bool attached() const { return attached_; }
++  int ordinal() const { return ordinal_; }
++  bool system_titlebar() const { return system_titlebar_; }
++  NSWindow* ns_window() const { return GetNSWindow(); }
++
++  // Height of the AppKit titlebar plus the native tab bar above the browser
++  // UI, or 0 when the window uses Chromium's own titlebar layout. Cached so
++  // it only changes right before a relayout: BrowserView's layout CHECKs
++  // that its bounds stay inside the client area.
++  int TopInset() const { return system_titlebar_ ? top_inset_ : 0; }
++
++  // AppKit fullscreen transitions: Chromium defers its own layout until they
++  // finish, so don't switch layouts in the middle of one.
++  void SetFullscreenTransition(bool in_transition, bool entering) {
++    fullscreen_transition_ = in_transition;
++    if (in_transition && entering) {
++      // Fullscreen uses Chromium's own (immersive) layout.
++      ApplyLayout(false, /*refresh_titlebar=*/false);
++    }
++  }
++
++  // Switches between Chromium's titlebar layout and the "profile tabs on top"
++  // layout whenever the native tab bar appears or disappears.
++  void RefreshLayout() {
++    NSWindow* window = GetNSWindow();
++    if (!window || widget_->IsClosed() || fullscreen_transition_) {
++      return;
++    }
++    const bool fullscreen = window.styleMask & NSWindowStyleMaskFullScreen;
++    const bool wanted =
++        attached_ && !fullscreen && window.tabGroup.windows.count > 1;
++    ApplyLayout(wanted, /*refresh_titlebar=*/!fullscreen);
++  }
++
++  void UpdateTitle() {
++    NSWindow* window = GetNSWindow();
++    if (!window) {
++      return;
++    }
++    std::u16string title = ProfileDisplayName(profile());
++    if (ordinal_ > 1) {
++      title += u" " + base::NumberToString16(ordinal_);
++    }
++    window.tab.title = base::SysUTF16ToNSString(title);
++  }
++
++  // views::WidgetObserver:
++  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override {
++    if (!visible || attach_posted_ || handled_) {
++      return;
++    }
++    attach_posted_ = true;
++    // Regroup after AppKit has finished ordering the window in.
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&ProfileTabsWindow::Attach,
++                                  weak_factory_.GetWeakPtr()));
++  }
++
++  void OnWidgetDestroying(views::Widget* widget) override { delete this; }
++
++ private:
++  NSWindow* GetNSWindow() const {
++    auto* host = views::NativeWidgetMacNSWindowHost::GetFromNativeWindow(
++        widget_->GetNativeWindow());
++    return host ? host->GetInProcessNSWindow() : nil;
++  }
++
++  // 1 for the first window of a profile, 2 for the second one, and so on.
++  int NextOrdinal() const {
++    int ordinal = 1;
++    for (ProfileTabsWindow* other : AllWindows()) {
++      if (other->attached() && other->profile() == profile()) {
++        ordinal = std::max(ordinal, other->ordinal() + 1);
++      }
++    }
++    return ordinal;
++  }
++
++  void ApplyLayout(bool system_titlebar, bool refresh_titlebar) {
++    NSWindow* window = GetNSWindow();
++    if (!window || system_titlebar == system_titlebar_) {
++      return;
++    }
++    // TopInset() still returns the old value here, so any layout AppKit
++    // triggers below sees consistent bounds.
++    system_titlebar_ = system_titlebar;
++    if (refresh_titlebar) {
++      // Make AppKit query the titlebar height again; same trick as
++      // BrowserFrameViewMac::OnTabStripStateChanged().
++      const NSRect frame = window.frame;
++      const NSUInteger style_mask = window.styleMask;
++      window.styleMask = style_mask ^ NSWindowStyleMaskFullSizeContentView;
++      window.styleMask = style_mask;
++      [window setFrame:frame display:NO];
++    }
++    top_inset_ = system_titlebar_
++                     ? std::max(0.0, NSHeight(window.frame) -
++                                         NSMaxY(window.contentLayoutRect))
++                     : 0;
++    // The frame view positions the client view (BrowserView).
++    widget_->non_client_view()->frame_view()->InvalidateLayout();
++    widget_->LayoutRootViewIfNecessary();
++    VLOG(1) << "profile tabs: " << base::SysNSStringToUTF8(window.tab.title)
++            << (system_titlebar_ ? " tab bar layout, top inset "
++                                 : " default layout ")
++            << top_inset_;
++  }
++
++  void Attach() {
++    attach_posted_ = false;
++    NSWindow* window = GetNSWindow();
++    if (!window || widget_->IsClosed() || !widget_->IsVisible()) {
++      return;
++    }
++    if (TabDragController::IsActive()) {
++      // The window was torn off a tab strip and is following the mouse.
++      // Leave it as a separate window.
++      handled_ = true;
++      VLOG(1) << "profile tabs: skip window created by a tab drag";
++      return;
++    }
++
++    handled_ = true;
++    attached_ = true;
++    ordinal_ = NextOrdinal();
++    window.tabbingIdentifier = kTabbingIdentifier;
++    window.tabbingMode = NSWindowTabbingModePreferred;
++    UpdateTitle();
++    EnsureTitleUpdater();
++
++    EnsureWindowNotifications();
++    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&RefreshAllLayouts));
++
++    NSWindow* group_window = FindGroupWindow(window);
++    if (!group_window) {
++      VLOG(1) << "profile tabs: first window "
++              << base::SysNSStringToUTF8(window.tab.title);
++      return;
++    }
++    // Append to the end of the group so tab positions stay stable. Keep the
++    // current selection unless this window was activated (e.g. session
++    // restore and focused:false windows must not steal focus).
++    const bool was_active = widget_->IsActive();
++    NSWindowTabGroup* group = group_window.tabGroup;
++    NSWindow* selected = group.selectedWindow;
++    NSWindow* last = group.windows.lastObject ?: group_window;
++    [last addTabbedWindow:window ordered:NSWindowAbove];
++    if (was_active) {
++      [window makeKeyAndOrderFront:nil];
++    } else if (selected) {
++      group.selectedWindow = selected;
++    }
++    VLOG(1) << "profile tabs: attached "
++            << base::SysNSStringToUTF8(window.tab.title) << ", group size "
++            << window.tabGroup.windows.count;
++  }
++
++  raw_ptr<views::Widget> widget_;
++  raw_ptr<BrowserView> browser_view_;
++  bool attach_posted_ = false;
++  // Set once the window was either attached or deliberately left alone.
++  bool handled_ = false;
++  bool attached_ = false;
++  bool system_titlebar_ = false;
++  bool fullscreen_transition_ = false;
++  int top_inset_ = 0;
++  int ordinal_ = 0;
++  base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
++      this};
++  base::WeakPtrFactory<ProfileTabsWindow> weak_factory_{this};
++};
++
++void UpdateAllTitles() {
++  for (ProfileTabsWindow* window : AllWindows()) {
++    if (window->attached()) {
++      window->UpdateTitle();
++    }
++  }
++}
++
++void RefreshAllLayouts() {
++  // RefreshLayout() can run nested layout code; iterate over a copy.
++  const std::vector<ProfileTabsWindow*> windows = AllWindows();
++  for (ProfileTabsWindow* window : windows) {
++    if (std::ranges::contains(AllWindows(), window)) {
++      window->RefreshLayout();
++    }
++  }
++}
++
++ProfileTabsWindow* FindWindowForNSWindow(id ns_window) {
++  for (ProfileTabsWindow* window : AllWindows()) {
++    if (window->ns_window() == ns_window) {
++      return window;
++    }
++  }
++  return nullptr;
++}
++
++void PostRefreshAllLayouts() {
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&RefreshAllLayouts));
++}
++
++void ObserveNotification(NSNotificationName name,
++                         void (^handler)(NSNotification*)) {
++  [NSNotificationCenter.defaultCenter addObserverForName:name
++                                                  object:nil
++                                                   queue:nil
++                                              usingBlock:handler];
++}
++
++// The tab bar appears or disappears when windows join, leave (closing, or a
++// system tab dragged out) or change fullscreen state.
++void EnsureWindowNotifications() {
++  static bool installed = false;
++  if (installed) {
++    return;
++  }
++  installed = true;
++  for (NSNotificationName name in @[
++         NSWindowDidBecomeKeyNotification, NSWindowWillCloseNotification
++       ]) {
++    ObserveNotification(name, ^(NSNotification*) {
++      PostRefreshAllLayouts();
++    });
++  }
++  ObserveNotification(NSWindowWillEnterFullScreenNotification,
++                      ^(NSNotification* notification) {
++                        if (auto* window =
++                                FindWindowForNSWindow(notification.object)) {
++                          window->SetFullscreenTransition(true, true);
++                        }
++                      });
++  ObserveNotification(NSWindowWillExitFullScreenNotification,
++                      ^(NSNotification* notification) {
++                        if (auto* window =
++                                FindWindowForNSWindow(notification.object)) {
++                          window->SetFullscreenTransition(true, false);
++                        }
++                      });
++  for (NSNotificationName name in @[
++         NSWindowDidEnterFullScreenNotification,
++         NSWindowDidExitFullScreenNotification
++       ]) {
++    ObserveNotification(name, ^(NSNotification* notification) {
++      if (auto* window = FindWindowForNSWindow(notification.object)) {
++        window->SetFullscreenTransition(false, false);
++      }
++      PostRefreshAllLayouts();
++    });
++  }
++}
++
++ProfileTabsWindow* FindWindow(const views::Widget* widget) {
++  for (ProfileTabsWindow* window : AllWindows()) {
++    if (window->widget() == widget) {
++      return window;
++    }
++  }
++  return nullptr;
++}
++
++}  // namespace
++
++void ObserveBrowserWidget(views::Widget* widget, BrowserView* browser_view) {
++  BrowserWindowInterface* browser = browser_view->browser();
++  if (!browser || browser->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
++    return;
++  }
++  if (FindWindow(widget)) {
++    return;
++  }
++  new ProfileTabsWindow(widget, browser_view);  // Owns itself.
++}
++
++bool UseSystemTitlebar(const views::Widget* widget) {
++  ProfileTabsWindow* window = FindWindow(widget);
++  return window && window->system_titlebar();
++}
++
++gfx::Rect AdjustClientBounds(const views::Widget* widget,
++                             const gfx::Rect& bounds) {
++  ProfileTabsWindow* window = FindWindow(widget);
++  gfx::Rect adjusted = bounds;
++  if (window) {
++    adjusted.Inset(gfx::Insets::TLBR(
++        std::min(window->TopInset(), bounds.height()), 0, 0, 0));
++  }
++  return adjusted;
++}
++
++void AdjustLayoutParams(const views::Widget* widget,
++                        BrowserLayoutParams& params) {
++  if (!UseSystemTitlebar(widget)) {
++    return;
++  }
++  params.leading_exclusion.content.set_width(0);
++  params.leading_exclusion.horizontal_padding = 0;
++  params.trailing_exclusion.content.set_width(0);
++  params.trailing_exclusion.horizontal_padding = 0;
++}
++
++}  // namespace profile_tabs
+-- 
+2.56.0
+
