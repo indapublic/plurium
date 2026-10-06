@@ -270,7 +270,8 @@ Delta) и проверяет:
 
 ```bash
 brew tap indapublic/plurium https://github.com/indapublic/plurium
-brew install --cask plurium      # обновление: brew upgrade --cask plurium
+brew trust --cask indapublic/plurium/plurium   # Homebrew 7+ требует доверия к стороннему tap
+brew install --cask indapublic/plurium/plurium # обновление: brew upgrade --cask plurium
 ```
 
 Один раз на машине, где делаются релизы:

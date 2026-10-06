@@ -14,7 +14,8 @@ Apple Silicon, macOS 13 or later.
 
 ```bash
 brew tap indapublic/plurium https://github.com/indapublic/plurium
-brew install --cask plurium
+brew trust --cask indapublic/plurium/plurium   # Homebrew 7+ asks to trust third-party taps
+brew install --cask indapublic/plurium/plurium
 ```
 
 Update with `brew upgrade --cask plurium`. Remove with
