@@ -1,10 +1,10 @@
-From 71d82682d8263be8ca30577456584074475135fc Mon Sep 17 00:00:00 2001
+From cd073a13206efeabda4e283cfdb37273c625ebca Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 11:23:50 +1000
 Subject: [PATCH 4/6] Mac: one tab strip with the tabs of all profiles
 
-While a window shares the profile tab group with other profile windows,
-Chromium's own tab strip is made invisible and inert (it keeps its row
+In every profile window (also one that is alone, so tabs always look
+the same) Chromium's own tab strip is made invisible and inert (it keeps its row
 and the window's minimum size, and leaves the accessibility tree) and a
 unified tab strip covers it. The unified strip shows the tabs of all
 profile windows in one global order, all drawn the same way and
@@ -33,10 +33,10 @@ hit test hook now returns HTCAPTION for empty strip space.
  chrome/browser/ui/BUILD.gn                    |   2 +
  .../ui/views/frame/browser_frame_view_mac.mm  |   5 +-
  .../browser/ui/views/frame/profile_tabs_mac.h |  17 +-
- .../ui/views/frame/profile_tabs_mac.mm        | 940 +++++++++++++++---
+ .../ui/views/frame/profile_tabs_mac.mm        | 942 +++++++++++++++---
  .../ui/views/frame/unified_tab_strip_mac.h    | 116 +++
  .../ui/views/frame/unified_tab_strip_mac.mm   | 481 +++++++++
- 6 files changed, 1403 insertions(+), 158 deletions(-)
+ 6 files changed, 1405 insertions(+), 158 deletions(-)
  create mode 100644 chrome/browser/ui/views/frame/unified_tab_strip_mac.h
  create mode 100644 chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
 
@@ -108,7 +108,7 @@ index f8c947b3380af..acffc3ab17cd9 100644
  }  // namespace profile_tabs
  
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index 5be55bad16f71..332ee7c3e7190 100644
+index 5be55bad16f71..b65f7932b3e07 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 @@ -9,52 +9,77 @@
@@ -431,16 +431,18 @@ index 5be55bad16f71..332ee7c3e7190 100644
    // window shares a group with other windows.
    void RefreshLayout() {
      NSWindow* window = GetNSWindow();
-@@ -316,7 +464,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -316,7 +464,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
      // it instead of under it.
      ApplyLayout(grouped && !tab_bar_hidden && !fullscreen,
                  /*refresh_titlebar=*/!fullscreen);
 -    ShowSwitcher(grouped && tab_bar_hidden && !fullscreen);
-+    ShowStrip(grouped && tab_bar_hidden);
++    // The unified strip also in a window of its own, so tabs always look the
++    // same.
++    ShowStrip(attached_ && (!grouped || tab_bar_hidden));
    }
  
    void UpdateTitle() {
-@@ -329,12 +477,36 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -329,12 +479,36 @@ class ProfileTabsWindow : public views::WidgetObserver,
        title_ += u" " + base::NumberToString16(ordinal_);
      }
      window.tab.title = base::SysUTF16ToNSString(title_);
@@ -482,7 +484,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
    }
  
    // views::WidgetObserver:
-@@ -345,33 +517,206 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -345,33 +519,206 @@ class ProfileTabsWindow : public views::WidgetObserver,
      PostAttach();
    }
  
@@ -706,7 +708,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
      }
    }
  
-@@ -382,6 +727,40 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -382,6 +729,40 @@ class ProfileTabsWindow : public views::WidgetObserver,
      return host ? host->GetInProcessNSWindow() : nil;
    }
  
@@ -747,7 +749,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
    void SetCanBeFullscreenPrimary(bool can) {
      NSWindow* window = GetNSWindow();
      if (!window) {
-@@ -418,8 +797,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -418,8 +799,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
    }
  
    void Relayout() {
@@ -757,7 +759,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
      widget_->non_client_view()->frame_view()->InvalidateLayout();
      browser_view_->InvalidateLayout();
      widget_->LayoutRootViewIfNecessary();
-@@ -453,80 +831,90 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -453,80 +833,90 @@ class ProfileTabsWindow : public views::WidgetObserver,
              << top_inset_;
    }
  
@@ -912,7 +914,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
    }
  
    void Attach() {
-@@ -563,6 +951,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -563,6 +953,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
      EnsureTitleUpdater();
      EnsureWindowNotifications();
      EnsureTabHotkeys();
@@ -920,7 +922,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
          FROM_HERE, base::BindOnce(&RefreshAllLayouts));
  
-@@ -571,8 +960,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -571,8 +962,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
        VLOG(1) << "profile tabs: first window " << base::UTF16ToUTF8(title_);
        return;
      }
@@ -931,7 +933,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
      // restore and focused:false windows must not steal focus).
      const bool was_active = widget_->IsActive();
      NSWindowTabGroup* group = group_window.tabGroup;
-@@ -601,21 +990,206 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -601,21 +992,206 @@ class ProfileTabsWindow : public views::WidgetObserver,
    int top_inset_ = 0;
    int ordinal_ = 0;
    int hide_tab_bar_attempts_ = 0;
@@ -1140,7 +1142,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
  }
  
  void RefreshAllLayouts() {
-@@ -626,6 +1200,7 @@ void RefreshAllLayouts() {
+@@ -626,6 +1202,7 @@ void RefreshAllLayouts() {
        window->RefreshLayout();
      }
    }
@@ -1148,7 +1150,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
  }
  
  ProfileTabsWindow* FindWindowForNSWindow(id ns_window) {
-@@ -707,18 +1282,9 @@ void EnsureWindowNotifications() {
+@@ -707,18 +1284,9 @@ void EnsureWindowNotifications() {
    }
  }
  
@@ -1170,7 +1172,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
    static constexpr std::array<std::pair<unsigned short, unsigned short>,
                                kMaxTabHotkeys>
        kKeys = {{{kVK_ANSI_1, kVK_ANSI_Keypad1},
-@@ -730,14 +1296,65 @@ bool HandleTabHotkey(NSEvent* event) {
+@@ -730,14 +1298,65 @@ bool HandleTabHotkey(NSEvent* event) {
                  {kVK_ANSI_7, kVK_ANSI_Keypad7},
                  {kVK_ANSI_8, kVK_ANSI_Keypad8},
                  {kVK_ANSI_9, kVK_ANSI_Keypad9}}};
@@ -1240,7 +1242,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
      return false;
    }
    // Bubbles and the omnibox popup are child windows of the browser window.
-@@ -748,11 +1365,50 @@ bool HandleTabHotkey(NSEvent* event) {
+@@ -748,11 +1367,50 @@ bool HandleTabHotkey(NSEvent* event) {
    if (![window.tabbingIdentifier isEqualToString:kTabbingIdentifier]) {
      return false;
    }
@@ -1294,7 +1296,7 @@ index 5be55bad16f71..332ee7c3e7190 100644
    return true;
  }
  
-@@ -811,32 +1467,18 @@ gfx::Rect AdjustClientBounds(const views::Widget* widget,
+@@ -811,32 +1469,18 @@ gfx::Rect AdjustClientBounds(const views::Widget* widget,
  void AdjustLayoutParams(const views::Widget* widget,
                          BrowserLayoutParams& params) {
    ProfileTabsWindow* window = FindWindow(widget);

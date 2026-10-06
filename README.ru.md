@@ -307,11 +307,17 @@ autoninja -C out/Release chrome chrome/installer/mac   # + скрипты под
 
 - в конце полосы вкладок появляется кнопка **Update**, а в меню
   «Plurium» пункт «Check for Updates…» превращается в «Update to <версия>…»;
-- по нажатию — подтверждение, затем Plurium сохраняет сессию (как
-  `chrome::AttemptRestart()`, с `prefs::kWasRestarted`) и закрывается;
-  отдельный скрипт ждёт выхода процесса, делает `brew update` и
-  `brew upgrade --cask indapublic/plurium/plurium` и открывает Plurium с
-  `--restore-last-session` — окна всех профилей возвращаются;
+- `chrome://settings/help` показывает ту же проверку вместо отсутствующего
+  Chromium Updater («Plurium is up to date» или «An update is available» с
+  кнопкой Relaunch);
+- по нажатию — подтверждение и обычный `chrome::AttemptRelaunch()` (сессии
+  всех профилей восстанавливаются, страница с несохранёнными данными может
+  отменить). Пока есть обновление, команда перезапуска подменена
+  (`upgrade_util::SetRelaunchChromeBrowserCallbackForTesting()`): отдельный
+  скрипт ждёт выхода процесса, делает `brew update` и
+  `brew upgrade --cask indapublic/plurium/plurium` и открывает Plurium с теми
+  же ключами перезапуска. Так обновляет и Relaunch на странице «О программе»,
+  и `chrome://restart`;
 - лог: `~/Library/Logs/Plurium/update.log`.
 
 Копия, поставленная не через brew (не из `/Applications` или без Caskroom),
