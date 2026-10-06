@@ -18,6 +18,8 @@ cask "plurium" do
 
   app "Plurium.app"
 
+  uninstall quit: "com.indapublic.plurium"
+
   zap trash: [
     "~/Library/Application Support/Plurium",
     "~/Library/Caches/Plurium",
