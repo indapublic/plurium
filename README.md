@@ -93,7 +93,10 @@ gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=
 autoninja -C out/Release chrome
 ```
 
-A full build takes about 9 hours on an M1 with 16 GB. The detailed guide
+A full build takes about 9 hours on an M1 with 16 GB. For a test build add
+`plurium_dev_build=true`: it becomes **Plurium Dev**
+(`com.indapublic.plurium.dev`, its own data directory and an orange icon), so
+it never mixes with the installed Plurium. The detailed guide
 (night build scripts, rebase procedure, checklist, signing) is in Russian:
 [README.ru.md](README.ru.md).
 

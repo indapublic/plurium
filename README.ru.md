@@ -60,14 +60,21 @@
   - `AdjustLayoutParams()` в `GetBrowserLayoutParams()` — запасная раскладка;
   - `NonClientHitTest()` в одноимённом методе — клик по вкладке не таскает окно,
     пустое место полосы таскает;
-- `chrome/app/theme/chromium/BRANDING` — `MAC_BUNDLE_ID`;
+- `chrome/app/theme/chromium/BRANDING` — `MAC_BUNDLE_ID`, `MAC_TEAM_ID`;
+- `build/util/branding.gni` — gn-аргумент `plurium_dev_build` (имя
+  «Plurium Dev» и суффикс `.dev` у bundle id);
+- `chrome/BUILD.gn` — подстановка `PLURIUM_APP_NAME` и выбор иконки (обычной
+  или `_dev`);
 - `chrome/app/app-Info.plist` — `CFBundleName`/`CFBundleDisplayName` (имя в
-  строке меню, Dock и Finder) и `CrProductDirName` (папка данных);
+  строке меню, Dock и Finder) и `CrProductDirName` (папка данных) =
+  `${PLURIUM_APP_NAME}`;
 - `chrome/app/chromium_strings.grd` — `IDS_PRODUCT_NAME`, `IDS_SHORT_PRODUCT_NAME`,
   `IDS_APP_MENU_PRODUCT_NAME` (непереводимые: пункты «About/Hide/Quit Plurium»,
   заголовки окон, системные запросы разрешений);
-- `chrome/app/theme/chromium/mac/Assets.car` и `app.icns` — перекрашенная иконка
-  (бинарные, их делает `tools/make-icon.py` из неизменённых исходников Chromium).
+- `chrome/app/theme/chromium/mac/Assets.car`, `app.icns` (фиолетовая) и
+  `Assets_dev.car`, `app_dev.icns` (оранжевая, Plurium Dev) — перекрашенные
+  иконки (бинарные, их делает `tools/make-icon.py` из неизменённых исходников
+  Chromium).
 
 Как это работает:
 
@@ -154,7 +161,15 @@ symbol_level = 0
 target_cpu = "arm64"
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
+plurium_dev_build = true   # отдельное приложение «Plurium Dev»
 ```
+
+С `plurium_dev_build = true` сборка — отдельное приложение **Plurium Dev**:
+bundle id `com.indapublic.plurium.dev`, данные в
+`~/Library/Application Support/Plurium Dev`, оранжевая иконка, обновления
+проверяются только по запросу. Так тесты не делят с рабочим Plurium ни
+настройки и разрешения macOS, ни плитку в Dock. В `out/Release` аргумента нет:
+это Plurium, который ставится пользователям.
 
 Инкрементальная пересборка после правки `profile_tabs_mac.mm` занимает около 30 секунд.
 
@@ -213,7 +228,7 @@ git format-patch "tags/$NEW" -o ../plurium/patches/   # обновить пат�
 - **Иконка** (`Assets.car`, `app.icns`). Если апстрим поменял иконку, взять его
   версию (в rebase это `--ours`) и пересобрать свою:
   ```bash
-  git checkout --ours chrome/app/theme/chromium/mac/Assets.car chrome/app/theme/chromium/mac/app.icns
+  git checkout --ours chrome/app/theme/chromium/mac/Assets*.car chrome/app/theme/chromium/mac/app*.icns
   python3 ../plurium/tools/make-icon.py
   git add chrome/app/theme/chromium/mac && git rebase --continue
   ```
@@ -248,7 +263,7 @@ Delta) и проверяет:
 | `open-profiles.sh` | Запустить и открыть окна 4 тестовых профилей |
 | `seed-profiles.py` | Назвать тестовые профили и задать им цвета темы, выключить выбор профиля на старте (`--restore` — «продолжить с того же места») |
 | `cdp.mjs` | Минимальный клиент DevTools Protocol (Node 22+) |
-| `make-icon.py` | Перекрасить иконку Chromium в фиолетовый и собрать `Assets.car`/`app.icns` (Pillow, Xcode 26) |
+| `make-icon.py` | Перекрасить иконку Chromium: фиолетовая для релиза, оранжевая для Plurium Dev; собрать `Assets*.car`/`app*.icns` (Pillow, Xcode 26) |
 | `night1.sh`, `night2.sh` | Ночные полные сборки |
 
 Ручная часть (мышь и клавиатура):

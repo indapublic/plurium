@@ -1,4 +1,4 @@
-From 91e94c532c9c37c40d33f643ceab1f403aee067c Mon Sep 17 00:00:00 2001
+From 87402cecde087dc7a5dd6f1eaf05266e14402b5f Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 6 Oct 2026 13:01:22 +1000
 Subject: [PATCH 6/6] Mac: Plurium updates through Homebrew
@@ -24,7 +24,8 @@ exit, runs `brew update` and `brew upgrade --cask
 indapublic/plurium/plurium`, and reopens the app with the relaunch
 switches. The log is ~/Library/Logs/Plurium/update.log.
 
-Copies not installed with Homebrew only point to the release page.
+Copies not installed with Homebrew only point to the release page;
+Plurium Dev checks only when asked to.
 Automatic checks can be turned off with the PluriumAutomaticUpdateChecks
 user default; --plurium-update-feed=<url> replaces the cask URL for
 testing. The About page's update texts say Plurium.
@@ -32,12 +33,12 @@ testing. The About page's update texts say Plurium.
  chrome/app/settings_chromium_strings.grdp     |   8 +-
  chrome/browser/ui/BUILD.gn                    |   2 +
  .../ui/views/frame/plurium_update_mac.h       |  32 +
- .../ui/views/frame/plurium_update_mac.mm      | 551 ++++++++++++++++++
+ .../ui/views/frame/plurium_update_mac.mm      | 556 ++++++++++++++++++
  .../ui/views/frame/profile_tabs_mac.mm        |   5 +
  .../ui/views/frame/unified_tab_strip_mac.h    |   6 +
  .../ui/views/frame/unified_tab_strip_mac.mm   |  48 +-
  .../ui/webui/help/version_updater_mac.mm      |   6 +
- 8 files changed, 651 insertions(+), 7 deletions(-)
+ 8 files changed, 656 insertions(+), 7 deletions(-)
  create mode 100644 chrome/browser/ui/views/frame/plurium_update_mac.h
  create mode 100644 chrome/browser/ui/views/frame/plurium_update_mac.mm
 
@@ -119,10 +120,10 @@ index 0000000000000..a910345badedd
 +#endif  // CHROME_BROWSER_UI_VIEWS_FRAME_PLURIUM_UPDATE_MAC_H_
 diff --git a/chrome/browser/ui/views/frame/plurium_update_mac.mm b/chrome/browser/ui/views/frame/plurium_update_mac.mm
 new file mode 100644
-index 0000000000000..b9284213c5c58
+index 0000000000000..c8722efa9759f
 --- /dev/null
 +++ b/chrome/browser/ui/views/frame/plurium_update_mac.mm
-@@ -0,0 +1,551 @@
+@@ -0,0 +1,556 @@
 +// Copyright 2026 The Chromium Authors
 +// Use of this source code is governed by a BSD-style license that can be
 +// found in the LICENSE file.
@@ -329,9 +330,12 @@ index 0000000000000..b9284213c5c58
 +    }
 +    started_ = true;
 +    UpdateMenuItem();
-+    if (AutomaticChecksEnabled()) {
-+      const bool testing =
-+          base::CommandLine::ForCurrentProcess()->HasSwitch(kFeedSwitch);
++    const bool testing =
++        base::CommandLine::ForCurrentProcess()->HasSwitch(kFeedSwitch);
++    // Plurium Dev (test builds) checks only when asked to or with a test
++    // feed.
++    const bool dev_build = base::apple::BaseBundleID().ends_with(".dev");
++    if (AutomaticChecksEnabled() && (!dev_build || testing)) {
 +      first_check_.Start(
 +          FROM_HERE, testing ? base::Seconds(3) : kFirstCheckDelay,
 +          base::BindOnce(&Updater::CheckAutomatically, base::Unretained(this)));
@@ -344,7 +348,9 @@ index 0000000000000..b9284213c5c58
 +
 +  const Version& available() const { return available_; }
 +  bool installed_with_brew() const { return install_.has_value(); }
-+  Version current() const { return install_ ? install_->version : RunningVersion(); }
++  Version current() const {
++    return install_ ? install_->version : RunningVersion();
++  }
 +
 +  void CheckAutomatically() { Check(/*user_initiated=*/false); }
 +
