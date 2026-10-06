@@ -53,6 +53,10 @@ The app is signed with a Developer ID and notarized by Apple.
 - Chrome's tab shortcuts follow the shared strip: ⌘1…⌘8, ⌘9 (last tab),
   ⌃Tab / ⌃⇧Tab, ⌘⌥← / ⌘⌥→, ⌘⇧[ / ⌘⇧], ⌃PgUp / ⌃PgDn, and ⌃⇧PgUp / ⌃⇧PgDn to
   move a tab. ⌃1…⌃9 jump to the N-th profile.
+- ⌘⇧T (and *File → Reopen Closed Tab*) reopens the most recently closed tab
+  of any profile — in its own profile and at its old place in the strip, even
+  if that profile's window had closed. Closing the active tab activates its
+  neighbor in the strip.
 - Incognito windows join too ("Work (Incognito)"). DevTools, popups, PWAs and
   dialogs stay separate windows.
 - Shared fullscreen for the whole group, with the same strip in fullscreen.
@@ -113,6 +117,7 @@ it never mixes with the installed Plurium. The detailed guide
 | `0005` | Plurium name, bundle id, data directory and icon |
 | `0006` | Updates through Homebrew from inside the app |
 | `0007` | Choice of the profile color mark (line on top by default) |
+| `0008` | ⌘⇧T and the focus after closing a tab follow the unified strip |
 
 Releases are made with `tools/release.sh` (Chromium's signing scripts,
 notarization, DMG, cask bump).

@@ -1,7 +1,7 @@
 From 4f0bf58d60049367fbc84634c3836d60c41ae94c Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 6 Oct 2026 13:01:22 +1000
-Subject: [PATCH 6/7] Mac: Plurium updates through Homebrew
+Subject: [PATCH 6/8] Mac: Plurium updates through Homebrew
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

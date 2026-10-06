@@ -1,7 +1,7 @@
 From 624fe20217cb85ea3b9b786b58a8008e20b763ac Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 09:31:44 +1000
-Subject: [PATCH 3/7] Mac: Chrome-style profile switcher instead of AppKit's
+Subject: [PATCH 3/8] Mac: Chrome-style profile switcher instead of AppKit's
  tab bar
 
 AppKit's tab bar does not fit Chrome's UI, so it is hidden in every

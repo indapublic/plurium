@@ -1,0 +1,434 @@
+From 4568750149d74e86e8da808035ae3e5aa0665d05 Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Tue, 6 Oct 2026 20:54:11 +1000
+Subject: [PATCH 8/8] Mac: Cmd+Shift+T and the focus after closing follow the
+ unified strip
+
+Chrome keeps recently closed tabs per profile, so Cmd+Shift+T (and File
+> Reopen Closed Tab) reopened a tab of the focused window's profile:
+closing the only tab of one profile moved the focus to another profile's
+window, and Cmd+Shift+T then reopened that profile's tab, or a page in
+the wrong profile.
+
+The unified strip now records which profile each closed tab belonged to
+and where it was. Cmd+Shift+T (caught by the key monitor) and the menu
+item (retargeted) pick the newest entry of all profiles: Chrome's own
+entries for profiles with a window, the recorded closes for the others.
+It reopens through that profile's tab restore service, loading the
+profile and opening a window for it if its last window had closed, and
+the tab goes back to its place in the strip. With nothing recorded,
+Chrome's command runs as before.
+
+When the active tab is closed, its neighbor in the unified strip (the
+next tab, else the previous one) becomes active, also when it belongs
+to another profile, instead of a tab Chrome or AppKit picks.
+---
+ .../ui/views/frame/profile_tabs_mac.mm        | 298 +++++++++++++++++-
+ 1 file changed, 296 insertions(+), 2 deletions(-)
+
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index e168eab511b28..4bb61057947f9 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -42,6 +42,7 @@
+ #include "chrome/browser/profiles/profile_avatar_icon_util.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/profiles/profile_manager_observer.h"
++#include "chrome/browser/sessions/tab_restore_service_factory.h"
+ #include "chrome/browser/ui/browser_commands.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -59,6 +60,9 @@
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
+ #include "chrome/common/chrome_paths.h"
+ #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
++#include "components/sessions/core/tab_restore_service.h"
++#include "components/sessions/core/tab_restore_service_observer.h"
++#include "components/sessions/core/tab_restore_types.h"
+ #include "components/tabs/public/tab_interface.h"
+ #include "content/public/browser/navigation_controller.h"
+ #include "content/public/browser/reload_type.h"
+@@ -95,6 +99,14 @@ base::apple::ScopedObjCClassSwizzler* g_toggle_fullscreen_swizzler = nullptr;
+ // Its -toggleFullScreen: is swapped with NSWindow's, so that a profile window
+ // that has not joined the group yet may still go fullscreen when Chromium
+ // asks for it (see SetCanBeFullscreenPrimary()).
++// File > Reopen Closed Tab, retargeted to do what Cmd+Shift+T does; falls
++// back to Chrome's command when there is nothing to reopen.
++@interface ProfileTabsReopenTarget : NSObject
++@property(nonatomic, weak) id originalTarget;
++@property(nonatomic) SEL originalAction;
++- (void)reopenClosedTab:(id)sender;
++@end
++
+ @interface ProfileTabsFullscreenInterceptor : NSObject
+ - (void)toggleFullScreen:(id)sender;
+ @end
+@@ -299,10 +311,16 @@ size_t IndexOfTab(const tabs::TabInterface* tab) {
+   return order.size();
+ }
+ 
+-// Where the next tab added to a window goes ("Move to profile").
++// Where the next tab added to a window goes ("Move to profile", a restored
++// closed tab). Without `window`, the first window of the profile at
++// `profile_path` that gets a new tab before `expires` (a restored tab may
++// open a new window).
+ struct PendingPlacement {
+   raw_ptr<ProfileTabsWindow> window;
+   size_t index;
++  base::FilePath profile_path;
++  bool off_the_record = false;
++  base::TimeTicks expires;
+ };
+ 
+ std::optional<PendingPlacement>& PendingTabPlacement() {
+@@ -346,6 +364,61 @@ SavedTabOrder& GetSavedTabOrder() {
+   return *saved;
+ }
+ 
++// Closes of tabs by the user, per profile, newest last. Chrome keeps closed
++// tabs per profile; with these Cmd+Shift+T reopens the most recently closed
++// tab of any profile, in its profile and at its place in the unified strip.
++struct ClosedTab {
++  size_t index;  // In the global order.
++  base::Time when;
++};
++struct ProfileKey {
++  base::FilePath path;  // Of the original profile.
++  bool off_the_record;
++  bool operator==(const ProfileKey&) const = default;
++};
++struct ClosedTabs {
++  ProfileKey profile;
++  std::vector<ClosedTab> tabs;
++};
++constexpr size_t kMaxClosedTabsPerProfile = 25;
++constexpr base::TimeDelta kRestorePlacementTimeout = base::Seconds(15);
++
++ProfileKey KeyOf(Profile* profile) {
++  return {profile->GetOriginalProfile()->GetPath(), profile->IsOffTheRecord()};
++}
++
++std::vector<ClosedTabs>& AllClosedTabs() {
++  static base::NoDestructor<std::vector<ClosedTabs>> closed;
++  return *closed;
++}
++
++ClosedTabs* FindClosedTabs(const ProfileKey& key) {
++  for (ClosedTabs& closed : AllClosedTabs()) {
++    if (closed.profile == key) {
++      return &closed;
++    }
++  }
++  return nullptr;
++}
++
++void RecordClosedTab(Profile* profile, size_t index) {
++  const ProfileKey key = KeyOf(profile);
++  ClosedTabs* closed = FindClosedTabs(key);
++  if (!closed) {
++    closed = &AllClosedTabs().emplace_back(ClosedTabs{key, {}});
++  }
++  closed->tabs.push_back({index, base::Time::Now()});
++  if (closed->tabs.size() > kMaxClosedTabsPerProfile) {
++    closed->tabs.erase(closed->tabs.begin());
++  }
++}
++
++// Set while "Move to profile" closes the source tab: that is no close to
++// undo, and the moved tab keeps the focus.
++bool g_moving_tab = false;
++
++bool RestoreClosedTab();
++void FocusTabSoon(ProfileTabsWindow* window, tabs::TabInterface* tab);
+ void UpdateAllTitles();
+ void RefreshAllLayouts();
+ void PostRefreshAllLayouts();
+@@ -596,8 +669,49 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       TabStripModel* tab_strip_model,
+       const TabStripModelChange& change,
+       const TabStripSelectionChange& selection) override {
++    if (change.type() == TabStripModelChange::kRemoved &&
++        !browser_shutdown::HasShutdownStarted() && !g_moving_tab) {
++      OnTabsClosed(*change.GetRemove(), selection);
++    }
+     PostUpdateAllStrips();
+   }
++
++  // Records closed tabs for Cmd+Shift+T and, when the active tab was closed,
++  // activates its neighbor in the unified strip (Chrome picks one in the
++  // window, and AppKit some other window when the last tab closes). The
++  // global order still has the removed tabs here.
++  void OnTabsClosed(const TabStripModelChange::Remove& remove,
++                    const TabStripSelectionChange& selection) {
++    std::vector<const tabs::TabInterface*> closed;
++    for (const TabStripModelChange::RemovedTab& removed : remove.contents) {
++      if (removed.remove_reason == TabRemovedReason::kDeleted) {
++        RecordClosedTab(profile(), IndexOfTab(removed.tab));
++        closed.push_back(removed.tab);
++      }
++    }
++    if (!selection.active_tab_changed() || !selection.old_tab ||
++        !std::ranges::contains(closed, selection.old_tab.get()) ||
++        !GetNSWindow().isKeyWindow) {
++      return;
++    }
++    const std::vector<TabSlot>& order = TabOrder();
++    const size_t index = IndexOfTab(selection.old_tab);
++    const auto open = [&](size_t i) {
++      return !std::ranges::contains(closed, order[i].tab.get());
++    };
++    for (size_t i = index + 1; i < order.size(); ++i) {
++      if (open(i)) {
++        FocusTabSoon(order[i].window, order[i].tab);
++        return;
++      }
++    }
++    for (size_t i = std::min(index, order.size()); i > 0; --i) {
++      if (open(i - 1)) {
++        FocusTabSoon(order[i - 1].window, order[i - 1].tab);
++        return;
++      }
++    }
++  }
+   void OnTabChangedAt(tabs::TabInterface* tab,
+                       TabChangeType change_type) override {
+     PostUpdateAllStrips();
+@@ -756,8 +870,10 @@ class ProfileTabsWindow : public views::WidgetObserver,
+             PendingPlacement{target, IndexOfTab(menu_tab_.tab)};
+         chrome::AddTabAt(target->browser(), contents->GetVisibleURL(), -1,
+                          /*foreground=*/true);
++        g_moving_tab = true;
+         menu_model->CloseWebContentsAt(index,
+                                        TabCloseTypes::CLOSE_USER_GESTURE);
++        g_moving_tab = false;
+         SelectTab(target->ns_window());
+       }
+       return;
+@@ -1153,15 +1269,29 @@ void ReconcileTabOrder() {
+ 
+   for (ProfileTabsWindow* window : windows) {
+     const std::vector<tabs::TabInterface*>& tabs = window_tabs[window];
++    bool placed_after_pending = false;
+     for (size_t k = 0; k < tabs.size(); ++k) {
+       if (IndexOfTab(tabs[k]) < order.size()) {
++        placed_after_pending = false;
+         continue;
+       }
+       size_t position = order.size();
+       std::optional<PendingPlacement>& pending = PendingTabPlacement();
+-      if (pending && pending->window == window) {
++      if (pending && !pending->expires.is_null() &&
++          base::TimeTicks::Now() > pending->expires) {
++        pending.reset();
++      }
++      if (pending &&
++          (pending->window == window ||
++           (!pending->window &&
++            KeyOf(window->profile()) ==
++                ProfileKey{pending->profile_path, pending->off_the_record}))) {
+         position = std::min(pending->index, order.size());
+         pending.reset();
++        placed_after_pending = true;
++      } else if (placed_after_pending && k > 0) {
++        // The other tabs of a restored window follow its first one.
++        position = IndexOfTab(tabs[k - 1]) + 1;
+       } else if (k + 1 < tabs.size()) {
+         // Opened between the window's tabs (e.g. from a link): stay next to
+         // them. Tabs appended to the window (Cmd+T) go to the end.
+@@ -1224,6 +1354,128 @@ void PostUpdateAllStrips() {
+       }));
+ }
+ 
++// Restores the most recent entry of a profile that has no window open, after
++// loading its closed tabs if needed. Owns itself.
++class RestoreWhenLoaded : public sessions::TabRestoreServiceObserver {
++ public:
++  static void Start(sessions::TabRestoreService* service) {
++    if (service->IsLoaded()) {
++      service->RestoreMostRecentEntry(nullptr);
++      return;
++    }
++    new RestoreWhenLoaded(service);
++  }
++
++  // sessions::TabRestoreServiceObserver:
++  void TabRestoreServiceLoaded(sessions::TabRestoreService* service) override {
++    service->RemoveObserver(this);
++    service->RestoreMostRecentEntry(nullptr);
++    delete this;
++  }
++  void TabRestoreServiceDestroyed(
++      sessions::TabRestoreService* service) override {
++    service->RemoveObserver(this);
++    delete this;
++  }
++
++ private:
++  explicit RestoreWhenLoaded(sessions::TabRestoreService* service) {
++    service->AddObserver(this);
++    service->LoadTabsFromLastSession();
++  }
++};
++
++// Cmd+Shift+T: the newest closed entry of all profiles, from Chrome's own
++// entries for profiles with a window and the recorded closes for the others,
++// reopens in its profile (a new window of it if needed) at its old place.
++bool RestoreClosedTab() {
++  struct Candidate {
++    ProfileKey profile;
++    base::Time when;
++    raw_ptr<ProfileTabsWindow> window;
++  };
++  std::optional<Candidate> best;
++  const auto consider = [&](const Candidate& candidate) {
++    if (!best || candidate.when > best->when) {
++      best = candidate;
++    }
++  };
++  const auto window_of = [](const ProfileKey& key) -> ProfileTabsWindow* {
++    for (ProfileTabsWindow* window : AllWindows()) {
++      if (window->attached() && KeyOf(window->profile()) == key) {
++        return window;
++      }
++    }
++    return nullptr;
++  };
++  for (ProfileTabsWindow* window : AllWindows()) {
++    sessions::TabRestoreService* service =
++        TabRestoreServiceFactory::GetForProfileIfExisting(window->profile());
++    if (window->attached() && service && service->IsLoaded() &&
++        !service->entries().empty()) {
++      consider({KeyOf(window->profile()), service->entries().front()->timestamp,
++                window});
++    }
++  }
++  for (const ClosedTabs& closed : AllClosedTabs()) {
++    // An incognito profile without windows is gone, with its closed tabs.
++    if (!closed.tabs.empty() && !closed.profile.off_the_record &&
++        !window_of(closed.profile)) {
++      consider({closed.profile, closed.tabs.back().when, nullptr});
++    }
++  }
++  if (!best) {
++    return false;
++  }
++  VLOG(1) << "profile tabs: reopening a closed tab of "
++          << best->profile.path.BaseName() << (best->window ? "" : " (no window)");
++  if (ClosedTabs* closed = FindClosedTabs(best->profile);
++      closed && !closed->tabs.empty()) {
++    PendingTabPlacement() =
++        PendingPlacement{nullptr, closed->tabs.back().index,
++                         best->profile.path, best->profile.off_the_record,
++                         base::TimeTicks::Now() + kRestorePlacementTimeout};
++    closed->tabs.pop_back();
++  }
++  if (best->window) {
++    chrome::RestoreTab(best->window->browser());
++    SelectTab(best->window->ns_window());
++    return true;
++  }
++  g_browser_process->profile_manager()->LoadProfileByPath(
++      best->profile.path, /*incognito=*/false,
++      base::BindOnce([](Profile* profile) {
++        if (!profile) {
++          return;
++        }
++        if (sessions::TabRestoreService* service =
++                TabRestoreServiceFactory::GetForProfile(profile)) {
++          RestoreWhenLoaded::Start(service);
++        }
++      }));
++  return true;
++}
++
++void FocusTabSoon(ProfileTabsWindow* window, tabs::TabInterface* tab) {
++  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(
++          [](ProfileTabsWindow* window, tabs::TabInterface* tab) {
++            if (!std::ranges::contains(AllWindows(), window)) {
++              return;
++            }
++            const int index = window->model()->GetIndexOfTab(tab);
++            if (index < 0) {
++              return;
++            }
++            window->model()->ActivateTabAt(
++                index, TabStripUserGestureDetails(
++                           TabStripUserGestureDetails::GestureType::kOther));
++            SelectTab(window->ns_window());
++          },
++          base::Unretained(window), base::Unretained(tab)));
++}
++
+ // Dragging a tab changes its place in the global order. Its window's own tab
+ // order (Chromium's) is updated to match.
+ void MoveTabInOrder(int from, int to) {
+@@ -1418,6 +1670,17 @@ bool HandleTabHotkey(NSEvent* event) {
+       event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask &
+       ~(NSEventModifierFlagCapsLock | NSEventModifierFlagNumericPad |
+         NSEventModifierFlagFunction);
++  // Cmd+Shift+T reopens the most recently closed tab of any profile; Chrome
++  // would reopen one of the focused window's profile.
++  if (event.keyCode == kVK_ANSI_T &&
++      modifiers == (NSEventModifierFlagCommand | NSEventModifierFlagShift)) {
++    NSWindow* window = NSApp.mainWindow ?: NSApp.keyWindow;
++    while (window.parentWindow) {
++      window = window.parentWindow;
++    }
++    return [window.tabbingIdentifier isEqualToString:kTabbingIdentifier] &&
++           RestoreClosedTab();
++  }
+   const int digit = DigitKeyIndex(event.keyCode);
+   const StripKey strip_key = GetStripKey(event.keyCode, modifiers);
+   const bool select_window =
+@@ -1481,11 +1744,31 @@ bool HandleTabHotkey(NSEvent* event) {
+   return true;
+ }
+ 
++NSMenuItem* FindMenuItemWithTag(NSMenu* menu, NSInteger tag) {
++  for (NSMenuItem* item in menu.itemArray) {
++    if (item.tag == tag) {
++      return item;
++    }
++    if (NSMenuItem* found = FindMenuItemWithTag(item.submenu, tag)) {
++      return found;
++    }
++  }
++  return nil;
++}
++
+ void EnsureTabHotkeys() {
+   static id monitor = nil;
+   if (monitor) {
+     return;
+   }
++  static ProfileTabsReopenTarget* reopen_target = nil;
++  if (NSMenuItem* item = FindMenuItemWithTag(NSApp.mainMenu, IDC_RESTORE_TAB)) {
++    reopen_target = [[ProfileTabsReopenTarget alloc] init];
++    reopen_target.originalTarget = item.target;
++    reopen_target.originalAction = item.action;
++    item.target = reopen_target;
++    item.action = @selector(reopenClosedTab:);
++  }
+   monitor = [NSEvent
+       addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown
+                                    handler:^NSEvent*(NSEvent* event) {
+@@ -1552,3 +1835,14 @@ int NonClientHitTest(const views::Widget* widget, const gfx::Point& point) {
+ }
+ 
+ }  // namespace profile_tabs
++
++@implementation ProfileTabsReopenTarget
++@synthesize originalTarget = _originalTarget;
++@synthesize originalAction = _originalAction;
++
++- (void)reopenClosedTab:(id)sender {
++  if (!profile_tabs::RestoreClosedTab()) {
++    [NSApp sendAction:_originalAction to:_originalTarget from:sender];
++  }
++}
++@end
+-- 
+2.56.0
+

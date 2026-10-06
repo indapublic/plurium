@@ -1,7 +1,7 @@
 From ab60a7ae294e4fedd948f85d9810273b6e888ca6 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 16:56:00 +1000
-Subject: [PATCH 5/7] Mac: Plurium branding for the profile-tabs build
+Subject: [PATCH 5/8] Mac: Plurium branding for the profile-tabs build
 
 The build otherwise looks like a regular Chromium to macOS: same bundle
 id (Dock, Launch Services, default browser, permissions), same name
