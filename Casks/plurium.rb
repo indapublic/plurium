@@ -5,7 +5,7 @@ cask "plurium" do
   url "https://github.com/indapublic/plurium/releases/download/v#{version}/Plurium-#{version}-arm64.dmg"
   name "Plurium"
   desc "Chromium with the tabs of all profiles in one window"
-  homepage "https://github.com/indapublic/plurium"
+  homepage "https://indapublic.github.io/plurium/"
 
   livecheck do
     url :url

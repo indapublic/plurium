@@ -6,6 +6,8 @@ in one tab strip. Work, personal and side-project accounts stay fully isolated
 once, in any order you like. A line along the top of each tab shows its
 profile's theme color.
 
+Website: **[indapublic.github.io/plurium](https://indapublic.github.io/plurium/)**
+
 ![Tabs of four profiles in one strip](docs/strip.jpg)
 
 ## Install

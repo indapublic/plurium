@@ -9,6 +9,8 @@
 Profile Color). Профили (куки, логины, расширения) изолированы как
 обычно, у каждого свой цвет темы.
 
+Сайт: **[indapublic.github.io/plurium](https://indapublic.github.io/plurium/)**
+
 Сборка называется **Plurium** (plural + ‑ium, игра слов с Chromium). Для macOS
 это отдельное приложение с фиолетовой иконкой Chromium и своим bundle id
 (`com.indapublic.plurium`). Свои данные оно хранит в
