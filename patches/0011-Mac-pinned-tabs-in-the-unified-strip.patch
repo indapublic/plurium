@@ -1,4 +1,4 @@
-From f8a9026fe93eaf13897c4cce91831e035b064749 Mon Sep 17 00:00:00 2001
+From 9074cec1dd65fc9ed4b9f2d2b148f4327e40ba97 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Sat, 10 Oct 2026 10:25:18 +1000
 Subject: [PATCH 11/11] Mac: pinned tabs in the unified strip
@@ -19,10 +19,10 @@ among the others.
  3 files changed, 202 insertions(+), 70 deletions(-)
 
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index 4b1b77e79f337..661c55d5eb6dc 100644
+index e5aedac47babc..842418f0bbe3d 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-@@ -163,9 +163,9 @@ enum MenuCommand {
+@@ -164,9 +164,9 @@ enum MenuCommand {
  };
  
  // Items of Chromium's tab menu the unified strip has no place for (yet):
@@ -35,7 +35,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
      kHiddenTabMenuCommands = {
          TabStripModel::CommandAddToSplit,
          TabStripModel::CommandAddToNewGroup,
-@@ -173,7 +173,6 @@ constexpr std::array<TabStripModel::ContextMenuCommand, 7>
+@@ -174,7 +174,6 @@ constexpr std::array<TabStripModel::ContextMenuCommand, 7>
          TabStripModel::CommandRemoveFromGroup,
          TabStripModel::CommandMoveToExistingWindow,
          TabStripModel::CommandMoveTabsToNewWindow,
@@ -43,7 +43,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
  };
  
  // A new tab from the tab menu lands next to the clicked tab in the unified
-@@ -320,6 +319,8 @@ void SelectTab(NSWindow* window) {
+@@ -321,6 +320,8 @@ void SelectTab(NSWindow* window) {
  struct TabSlot {
    raw_ptr<ProfileTabsWindow> window;
    raw_ptr<tabs::TabInterface> tab;
@@ -52,7 +52,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
  };
  
  std::vector<TabSlot>& TabOrder() {
-@@ -644,6 +645,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -645,6 +646,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
        data.loading = contents->IsLoading();
        data.audible = contents->IsCurrentlyAudible();
        data.muted = contents->IsAudioMuted();
@@ -60,7 +60,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
        tabs.push_back(std::move(data));
      }
      strip_->SetMarkStyle(CurrentMarkStyle());
-@@ -764,6 +766,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -765,6 +767,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
                        TabChangeType change_type) override {
      PostUpdateAllStrips();
    }
@@ -70,7 +70,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
  
    // Called right before -toggleFullScreen:. AppKit makes the whole tab group
    // fullscreen; each profile window follows (Chromium updates its own
-@@ -1541,6 +1546,17 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1561,6 +1566,17 @@ class ProfileTabsWindow : public views::WidgetObserver,
    base::WeakPtrFactory<ProfileTabsWindow> weak_factory_{this};
  };
  
@@ -88,7 +88,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
  // Brings the global order in line with the windows' tab strips: drops closed
  // tabs, keeps each window's tabs in Chromium's order and places new tabs.
  void ReconcileTabOrder() {
-@@ -1584,6 +1600,7 @@ void ReconcileTabOrder() {
+@@ -1604,6 +1620,7 @@ void ReconcileTabOrder() {
        }
      }
      order = std::move(restored);
@@ -96,7 +96,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
      if (complete) {
        saved.keys.clear();
      }
-@@ -1596,6 +1613,24 @@ void ReconcileTabOrder() {
+@@ -1616,6 +1633,24 @@ void ReconcileTabOrder() {
             !std::ranges::contains(it->second, slot.tab.get());
    });
  
@@ -121,7 +121,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
    // Each window's slots, refilled in Chromium's order of its tabs.
    for (ProfileTabsWindow* window : windows) {
      std::vector<size_t> positions;
-@@ -1646,6 +1681,7 @@ void ReconcileTabOrder() {
+@@ -1666,6 +1701,7 @@ void ReconcileTabOrder() {
        order.insert(order.begin() + position, TabSlot{window, tabs[k]});
      }
    }
@@ -129,7 +129,7 @@ index 4b1b77e79f337..661c55d5eb6dc 100644
    ScheduleSaveTabOrder();
  }
  
-@@ -1826,7 +1862,15 @@ void FocusTabSoon(ProfileTabsWindow* window, tabs::TabInterface* tab) {
+@@ -1846,7 +1882,15 @@ void FocusTabSoon(ProfileTabsWindow* window, tabs::TabInterface* tab) {
  void MoveTabInOrder(int from, int to) {
    std::vector<TabSlot>& order = TabOrder();
    const int count = static_cast<int>(order.size());

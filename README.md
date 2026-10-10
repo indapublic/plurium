@@ -49,11 +49,12 @@ The app is signed with a Developer ID and notarized by Apple.
   middle-click or × to close.
 - Right-click a tab for Chromium's own tab menu (New Tab to the Right, Reload,
   Duplicate, Pin, Mute Site, Reading List, Show Tabs Vertically, extension
-  items, Close…) plus **Move to Profile** (reopens the URL in another profile
-  at the same place) and **Profile Color**. New tabs and duplicates land next
-  to the clicked tab, Close Tabs to the Right follows the shared strip, Close
-  Other Tabs closes the profile's other tabs. Tab groups and split view aren't
-  in the menu yet. Right-click **+** to open a new tab in any profile.
+  items, Close…) with a **Plurium** submenu: **Move to** another profile
+  (reopens the URL there at the same place), **Profile Color** and **Close
+  Other Tabs of** the tab's profile. New tabs and duplicates land next to the
+  clicked tab; Close Other Tabs and Close Tabs to the Right follow the shared
+  strip, across profiles. Tab groups and split view aren't in the menu yet.
+  Right-click **+** to open a new tab in any profile.
 - Pinned tabs of all profiles come first, as narrow tabs with the icon and the
   profile mark (tiles above the other tabs with vertical tabs).
 - Chrome's tab shortcuts follow the shared strip: ⌘1…⌘8, ⌘9 (last tab),

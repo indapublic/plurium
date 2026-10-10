@@ -1,25 +1,25 @@
-From ec400546a902d9be0d6dffe9f4addcda59272f1f Mon Sep 17 00:00:00 2001
+From af03dfeebc738d6010918dab53656b896ef9daff Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Sat, 10 Oct 2026 09:50:29 +1000
 Subject: [PATCH 10/11] Mac: Chromium's tab menu in the unified strip
 
 Right-clicking a tab of the unified strip shows Chromium's own tab menu
-(TabMenuModel) for the tab in its window, with the profile items added:
-Move to Profile, Profile Color, and Close Other Tabs labelled with the
-profile. The tab position toggle (Show Tabs Vertically), Mute Site,
-Reading List and extension items now work from the strip too.
+(TabMenuModel) for the tab in its window, with a Plurium submenu for
+what the profiles add: Move to <profile>, Profile Color and Close Other
+Tabs of <profile>. The tab position toggle (Show Tabs Vertically), Mute
+Site, Reading List and extension items now work from the strip too.
 
 New Tab to the Right and Duplicate place the new tab right after the
-clicked one in the unified order and show its window; Close Tabs to the
-Right closes the tabs after it in the unified order, of all profiles.
-Pin, groups, split view and moving a tab to another window are left out
-until the strip can show them.
+clicked one in the unified order and show its window; Close Other Tabs
+and Close Tabs to the Right close the other tabs or the tabs after it in
+the unified order, of all profiles. Pin, groups, split view and moving a
+tab to another window are left out until the strip can show them.
 ---
- .../ui/views/frame/profile_tabs_mac.mm        | 328 ++++++++++++++----
- 1 file changed, 256 insertions(+), 72 deletions(-)
+ .../ui/views/frame/profile_tabs_mac.mm        | 344 ++++++++++++++----
+ 1 file changed, 274 insertions(+), 70 deletions(-)
 
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index 61f3958b1f2cc..4b1b77e79f337 100644
+index 61f3958b1f2cc..e5aedac47babc 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 @@ -35,6 +35,7 @@
@@ -51,7 +51,7 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
  #include "ui/base/hit_test.h"
  #include "ui/base/models/image_model.h"
  #include "ui/base/mojom/menu_source_type.mojom.h"
-@@ -144,22 +147,39 @@ constexpr base::TimeDelta kHideTabBarRetryDelay = base::Milliseconds(50);
+@@ -144,22 +147,40 @@ constexpr base::TimeDelta kHideTabBarRetryDelay = base::Milliseconds(50);
  constexpr base::TimeDelta kSaveTabOrderDelay = base::Seconds(1);
  constexpr base::TimeDelta kRestoreTabOrderPeriod = base::Seconds(30);
  
@@ -67,8 +67,9 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
 -  kCloseOthersCommand,
 -  kMoveToSubmenuCommand,
 +  kFirstMenuCommand = 3000,
-+  kMoveToSubmenuCommand = kFirstMenuCommand,
++  kPluriumSubmenuCommand = kFirstMenuCommand,
    kMarkStyleSubmenuCommand,
++  kCloseProfileTabsCommand,
    // + index into the menu's window list.
 -  kMoveToWindowCommand = 100,
 -  kNewTabInWindowCommand = 200,
@@ -101,7 +102,7 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
  // The profile color mark of the unified tab strip, for all windows.
  NSString* const kMarkStyleKey = @"ProfileMarkStyle";
  
-@@ -641,6 +661,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -641,6 +662,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    void OnWidgetDestroying(views::Widget* widget) override {
      TabStripModelObserver::StopObservingAll(this);
@@ -111,7 +112,7 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
      // The strip may live in an overlay widget that outlives this object.
      if (strip_) {
        strip_observation_.Reset();
-@@ -785,18 +808,28 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -785,18 +809,29 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    void NewTab() override { chrome::ExecuteCommand(browser(), IDC_NEW_TAB); }
  
@@ -144,45 +145,45 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
 +    }
 +    RemoveExtraSeparators(*tab_menu);
 +
++    // "Plurium ▸" with what the profiles add.
      submenu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
      menu_windows_.clear();
      for (ProfileTabsWindow* window : GroupWindowsInOrder()) {
-@@ -809,16 +842,35 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -805,20 +840,34 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       }
+       submenu_model_->AddItemWithIcon(
+           kMoveToWindowCommand + static_cast<int>(menu_windows_.size()),
+-          window->title(), ProfileAvatar(window->profile()));
++          u"Move to " + window->title(), ProfileAvatar(window->profile()));
        menu_windows_.push_back(window);
      }
      if (!menu_windows_.empty()) {
 -      menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
 -      menu_model_->AddSubMenu(kMoveToSubmenuCommand, u"Move to profile",
 -                              submenu_model_.get());
--    }
++      submenu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++    }
++    submenu_model_->AddSubMenu(kMarkStyleSubmenuCommand, u"Profile Color",
++                               MarkStyleMenu());
++    submenu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++    submenu_model_->AddItem(
++        kCloseProfileTabsCommand,
++        u"Close Other Tabs of " + menu_tab_.window->title());
++    if (std::optional<size_t> at = tab_menu->GetIndexOfCommandId(
++            TabStripModel::CommandToggleVertical)) {
++      tab_menu->InsertSubMenuAt(*at + 1, kPluriumSubmenuCommand, u"Plurium",
++                                submenu_model_.get());
++    } else {
++      tab_menu->AddSeparator(ui::NORMAL_SEPARATOR);
++      tab_menu->AddSubMenu(kPluriumSubmenuCommand, u"Plurium",
++                           submenu_model_.get());
+     }
 -    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
 -    AddMarkStyleSubmenu();
 -    menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
 -    menu_model_->AddItem(kCloseCommand, u"Close tab");
 -    menu_model_->AddItem(kCloseOthersCommand,
 -                         u"Close other tabs of " + menu_tab_.window->title());
-+      // Where Chromium has "Move Tab to New Window".
-+      const size_t at =
-+          tab_menu->GetIndexOfCommandId(TabStripModel::CommandNewTabToRight)
-+              .value_or(0);
-+      tab_menu->InsertSubMenuAt(at + 1, kMoveToSubmenuCommand,
-+                                u"Move to Profile", submenu_model_.get());
-+    }
-+    if (std::optional<size_t> at = tab_menu->GetIndexOfCommandId(
-+            TabStripModel::CommandToggleVertical)) {
-+      tab_menu->InsertSubMenuAt(*at + 1, kMarkStyleSubmenuCommand,
-+                                u"Profile Color", MarkStyleMenu());
-+    } else {
-+      tab_menu->AddSeparator(ui::NORMAL_SEPARATOR);
-+      tab_menu->AddSubMenu(kMarkStyleSubmenuCommand, u"Profile Color",
-+                           MarkStyleMenu());
-+    }
-+    // Chromium closes the other tabs of the window, which are the profile's.
-+    if (std::optional<size_t> at = tab_menu->GetIndexOfCommandId(
-+            TabStripModel::CommandCloseOtherTabs)) {
-+      tab_menu->SetLabel(*at,
-+                         u"Close Other Tabs of " + menu_tab_.window->title());
-+    }
 +    // Enabled by IsCommandIdEnabled(), for the unified strip.
 +    if (std::optional<size_t> at = tab_menu->GetIndexOfCommandId(
 +            TabStripModel::CommandCloseTabsToRight)) {
@@ -193,7 +194,7 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
      RunMenu(screen_point);
    }
  
-@@ -826,31 +878,43 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -826,31 +875,43 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    // The strip's empty space also opens new tabs in any profile.
    void ShowStripMenu(const gfx::Point& screen_point) override {
@@ -242,7 +243,7 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
    // "New tab in <profile>" for each window of the group.
    void AddNewTabItems() {
      menu_windows_.clear();
-@@ -864,11 +928,64 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -864,11 +925,70 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    // ui::SimpleMenuModel::Delegate:
    bool IsCommandIdChecked(int command_id) const override {
@@ -257,6 +258,11 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
 +    if (extensions::ContextMenuMatcher* matcher = ExtensionItems(command_id)) {
 +      return matcher->IsCommandIdEnabled(command_id);
 +    }
++    if (command_id == kCloseProfileTabsCommand) {
++      return MenuTabIndex() >= 0 &&
++             menu_tab_.window->model()->IsContextMenuCommandEnabled(
++                 MenuTabIndex(), TabStripModel::CommandCloseOtherTabs);
++    }
 +    if (!IsTabMenuCommand(command_id)) {
 +      return IsOwnCommand(command_id);
 +    }
@@ -266,8 +272,9 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
 +    }
 +    const auto command =
 +        static_cast<TabStripModel::ContextMenuCommand>(command_id);
-+    if (command == TabStripModel::CommandCloseTabsToRight) {
-+      return !TabsAfterMenuTab().empty();
++    if (command == TabStripModel::CommandCloseOtherTabs ||
++        command == TabStripModel::CommandCloseTabsToRight) {
++      return !TabsToClose(command).empty();
 +    }
 +    return menu_tab_.window->model()->IsContextMenuCommandEnabled(index,
 +                                                                  command);
@@ -307,13 +314,19 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
      if (command_id >= kMarkStyleCommand) {
        const int style = command_id - kMarkStyleCommand;
        if (style <= static_cast<int>(ProfileMarkStyle::kMaxValue)) {
-@@ -885,55 +1002,23 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -885,55 +1005,30 @@ class ProfileTabsWindow : public views::WidgetObserver,
        }
        return;
      }
 -    if (!std::ranges::contains(AllWindows(), menu_tab_.window.get())) {
--      return;
--    }
++    const int index = MenuTabIndex();
++    if (command_id == kCloseProfileTabsCommand && index >= 0) {
++      // Chromium closes the other tabs of the window, which are the
++      // profile's.
++      menu_tab_.window->model()->ExecuteContextMenuCommand(
++          index, TabStripModel::CommandCloseOtherTabs);
+       return;
+     }
 -    TabStripModel* menu_model = menu_tab_.window->model();
 -    const int index = menu_model->GetIndexOfTab(menu_tab_.tab);
 -    if (index < 0) {
@@ -321,7 +334,6 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
 -    }
 -    content::WebContents* contents = menu_tab_.tab->GetContents();
 -    if (command_id >= kMoveToWindowCommand) {
-+    const int index = MenuTabIndex();
 +    if (command_id >= kMoveToWindowCommand && index >= 0) {
        if (ProfileTabsWindow* target =
                MenuWindow(command_id - kMoveToWindowCommand)) {
@@ -369,7 +381,7 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
      }
    }
  
-@@ -969,6 +1054,103 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -969,6 +1064,113 @@ class ProfileTabsWindow : public views::WidgetObserver,
      return menu_windows_[index];
    }
  
@@ -401,14 +413,23 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
 +    return menu_tab_.window->model()->GetIndexOfTab(menu_tab_.tab);
 +  }
 +
-+  // "Close Tabs to the Right" of the unified strip: the tabs after the menu's
-+  // tab, of all profiles, except pinned ones (as in Chromium).
-+  std::vector<tabs::TabHandle> TabsAfterMenuTab() const {
++  // "Close Other Tabs" and "Close Tabs to the Right" of the unified strip:
++  // the other tabs or the tabs after the menu's tab, of all profiles, except
++  // pinned ones (as in Chromium).
++  std::vector<tabs::TabHandle> TabsToClose(
++      TabStripModel::ContextMenuCommand command) const {
 +    std::vector<tabs::TabHandle> tabs;
 +    const std::vector<TabSlot>& order = TabOrder();
-+    for (size_t i = IndexOfTab(menu_tab_.tab) + 1; i < order.size(); ++i) {
++    const size_t menu_tab = IndexOfTab(menu_tab_.tab);
++    if (menu_tab == order.size()) {
++      return tabs;
++    }
++    const size_t first =
++        command == TabStripModel::CommandCloseTabsToRight ? menu_tab + 1 : 0;
++    for (size_t i = first; i < order.size(); ++i) {
 +      // The order catches up with closed tabs and windows a moment later.
-+      if (std::ranges::contains(AllWindows(), order[i].window.get()) &&
++      if (i != menu_tab &&
++          std::ranges::contains(AllWindows(), order[i].window.get()) &&
 +          order[i].window->model()->GetIndexOfTab(order[i].tab) >= 0 &&
 +          !order[i].tab->IsPinned()) {
 +        tabs.push_back(order[i].tab->GetHandle());
@@ -426,8 +447,9 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
 +    }
 +    ProfileTabsWindow* window = menu_tab_.window;
 +    switch (command) {
++      case TabStripModel::CommandCloseOtherTabs:
 +      case TabStripModel::CommandCloseTabsToRight: {
-+        const std::vector<tabs::TabHandle> tabs = TabsAfterMenuTab();
++        const std::vector<tabs::TabHandle> tabs = TabsToClose(command);
 +        for (auto it = tabs.rbegin(); it != tabs.rend(); ++it) {
 +          for (ProfileTabsWindow* other : AllWindows()) {
 +            const int other_index =
@@ -473,7 +495,7 @@ index 61f3958b1f2cc..4b1b77e79f337 100644
    void RunMenu(const gfx::Point& screen_point) {
      menu_runner_ = std::make_unique<views::MenuRunner>(
          menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
-@@ -1340,6 +1522,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1340,6 +1542,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
    TabSlot menu_tab_;
    std::vector<raw_ptr<ProfileTabsWindow>> menu_windows_;
    std::unique_ptr<ui::SimpleMenuModel> menu_model_;
