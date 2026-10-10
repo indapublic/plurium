@@ -1,7 +1,7 @@
 From ede020e17fc44562296915a216d2c3d029dd96f4 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Sat, 10 Oct 2026 09:50:29 +1000
-Subject: [PATCH 10/11] Mac: Chromium's tab menu in the unified strip
+Subject: [PATCH 10/12] Mac: Chromium's tab menu in the unified strip
 
 Right-clicking a tab of the unified strip shows Chromium's own tab menu
 (TabMenuModel) for the tab in its window, with a Plurium submenu for

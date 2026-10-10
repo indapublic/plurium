@@ -1,7 +1,7 @@
 From 4568750149d74e86e8da808035ae3e5aa0665d05 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 6 Oct 2026 20:54:11 +1000
-Subject: [PATCH 08/11] Mac: Cmd+Shift+T and the focus after closing follow the
+Subject: [PATCH 08/12] Mac: Cmd+Shift+T and the focus after closing follow the
  unified strip
 
 Chrome keeps recently closed tabs per profile, so Cmd+Shift+T (and File

@@ -1,7 +1,7 @@
 From f8efad488a98f2d2ef54b535a62008bf0d5354b1 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 11:23:50 +1000
-Subject: [PATCH 04/11] Mac: one tab strip with the tabs of all profiles
+Subject: [PATCH 04/12] Mac: one tab strip with the tabs of all profiles
 
 In every profile window (also one that is alone, so tabs always look
 the same) Chromium's own tab strip is made invisible and inert (it keeps its row

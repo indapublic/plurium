@@ -1,7 +1,7 @@
 From a07646931beb0bbc940ca14315eb54ec2e0328ee Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 6 Oct 2026 21:44:00 +1000
-Subject: [PATCH 09/11] Mac: the unified strip also works with vertical tabs
+Subject: [PATCH 09/12] Mac: the unified strip also works with vertical tabs
 
 With Tab position: Vertical, Chromium shows its vertical tab strip and
 the unified strip stayed in the hidden horizontal region, so every

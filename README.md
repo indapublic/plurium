@@ -53,10 +53,14 @@ The app is signed with a Developer ID and notarized by Apple.
   (reopens the URL there at the same place), **Profile Color** and **Close
   Other Tabs of** the tab's profile. New tabs and duplicates land next to the
   clicked tab; Close Other Tabs and Close Tabs to the Right follow the shared
-  strip, across profiles. Tab groups and split view aren't in the menu yet.
-  Right-click **+** to open a new tab in any profile.
+  strip, across profiles. Split view isn't in the menu yet. Right-click **+**
+  to open a new tab in any profile.
 - Pinned tabs of all profiles come first, as narrow tabs with the icon and the
   profile mark (tiles above the other tabs with vertical tabs).
+- Tab groups: a group belongs to one profile and its tabs stay together, with
+  a header chip and a line in the group's color. Click the header to collapse
+  or expand it, right-click it for Chromium's group editor, drag it to move
+  the group; drag a tab between the tabs of a group of its profile to add it.
 - Chrome's tab shortcuts follow the shared strip: ⌘1…⌘8, ⌘9 (last tab),
   ⌃Tab / ⌃⇧Tab, ⌘⌥← / ⌘⌥→, ⌘⇧[ / ⌘⇧], ⌃PgUp / ⌃PgDn, and ⌃⇧PgUp / ⌃⇧PgDn to
   move a tab. ⌃1…⌃9 jump to the N-th profile.
@@ -132,6 +136,7 @@ it never mixes with the installed Plurium. The detailed guide
 | `0009` | The unified strip with vertical tabs |
 | `0010` | Chromium's tab menu in the unified strip |
 | `0011` | Pinned tabs in the unified strip |
+| `0012` | Tab groups in the unified strip |
 
 Releases are made with `tools/release.sh` (Chromium's signing scripts,
 notarization, DMG, cask bump).

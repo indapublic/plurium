@@ -1,7 +1,7 @@
 From d37009536260d01859eb16d2403f8a6fac9eb8b2 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Sat, 10 Oct 2026 10:25:18 +1000
-Subject: [PATCH 11/11] Mac: pinned tabs in the unified strip
+Subject: [PATCH 11/12] Mac: pinned tabs in the unified strip
 
 The tab menu's Pin Tab works now. The pinned tabs of all profiles come
 first in the unified strip, as narrow tabs with just the icon and the
