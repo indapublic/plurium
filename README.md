@@ -143,7 +143,8 @@ notarization, DMG, cask bump).
 
 ## License
 
-Plurium is a modified build of [Chromium](https://www.chromium.org/), whose
-source is under a BSD-style license; see `chrome://credits` in the app for the
-licenses of all components. Plurium is not affiliated with or endorsed by
+The patches, scripts and site in this repository are under the
+[BSD 3-Clause License](LICENSE). Plurium is a modified build of
+[Chromium](https://www.chromium.org/), whose source is under a BSD-style
+license; see `chrome://credits` in the app for the licenses of all components. Plurium is not affiliated with or endorsed by
 Google. Chromium is a trademark of Google LLC.
