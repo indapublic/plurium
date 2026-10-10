@@ -92,9 +92,9 @@ Set each profile's color in *Customize Chromium → Color*.
 - No Widevine, so DRM video (Netflix, Spotify Web) does not play.
 - Updates come only through new releases of this repository; every Chromium
   security release needs a rebuild.
-- In place of Chromium's tab strip you lose hover previews, pinned tabs and tab
-  groups (still in the model, not drawn), dragging a tab out into a new
-  window, dropping links onto the strip, and tab search.
+- In place of Chromium's tab strip you lose hover previews, dragging a tab
+  out into a new window, dropping links onto the strip, tab search and split
+  view.
 - Some built-in texts still say "Chromium".
 
 ## Build from source
