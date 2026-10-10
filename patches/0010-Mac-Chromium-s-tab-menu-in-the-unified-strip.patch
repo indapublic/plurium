@@ -1,4 +1,4 @@
-From af03dfeebc738d6010918dab53656b896ef9daff Mon Sep 17 00:00:00 2001
+From ede020e17fc44562296915a216d2c3d029dd96f4 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Sat, 10 Oct 2026 09:50:29 +1000
 Subject: [PATCH 10/11] Mac: Chromium's tab menu in the unified strip
@@ -19,7 +19,7 @@ tab to another window are left out until the strip can show them.
  1 file changed, 274 insertions(+), 70 deletions(-)
 
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index 61f3958b1f2cc..e5aedac47babc 100644
+index b42e859c600d0..e641e354a84c7 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 @@ -35,6 +35,7 @@
@@ -51,7 +51,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
  #include "ui/base/hit_test.h"
  #include "ui/base/models/image_model.h"
  #include "ui/base/mojom/menu_source_type.mojom.h"
-@@ -144,22 +147,40 @@ constexpr base::TimeDelta kHideTabBarRetryDelay = base::Milliseconds(50);
+@@ -146,22 +149,40 @@ constexpr base::TimeDelta kHideTabBarRetryDelay = base::Milliseconds(50);
  constexpr base::TimeDelta kSaveTabOrderDelay = base::Seconds(1);
  constexpr base::TimeDelta kRestoreTabOrderPeriod = base::Seconds(30);
  
@@ -102,7 +102,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
  // The profile color mark of the unified tab strip, for all windows.
  NSString* const kMarkStyleKey = @"ProfileMarkStyle";
  
-@@ -641,6 +662,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -652,6 +673,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    void OnWidgetDestroying(views::Widget* widget) override {
      TabStripModelObserver::StopObservingAll(this);
@@ -112,7 +112,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
      // The strip may live in an overlay widget that outlives this object.
      if (strip_) {
        strip_observation_.Reset();
-@@ -785,18 +809,29 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -796,18 +820,29 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    void NewTab() override { chrome::ExecuteCommand(browser(), IDC_NEW_TAB); }
  
@@ -149,7 +149,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
      submenu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
      menu_windows_.clear();
      for (ProfileTabsWindow* window : GroupWindowsInOrder()) {
-@@ -805,20 +840,34 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -816,20 +851,34 @@ class ProfileTabsWindow : public views::WidgetObserver,
        }
        submenu_model_->AddItemWithIcon(
            kMoveToWindowCommand + static_cast<int>(menu_windows_.size()),
@@ -194,7 +194,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
      RunMenu(screen_point);
    }
  
-@@ -826,31 +875,43 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -837,31 +886,43 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    // The strip's empty space also opens new tabs in any profile.
    void ShowStripMenu(const gfx::Point& screen_point) override {
@@ -243,7 +243,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
    // "New tab in <profile>" for each window of the group.
    void AddNewTabItems() {
      menu_windows_.clear();
-@@ -864,11 +925,70 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -875,11 +936,70 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    // ui::SimpleMenuModel::Delegate:
    bool IsCommandIdChecked(int command_id) const override {
@@ -314,7 +314,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
      if (command_id >= kMarkStyleCommand) {
        const int style = command_id - kMarkStyleCommand;
        if (style <= static_cast<int>(ProfileMarkStyle::kMaxValue)) {
-@@ -885,55 +1005,30 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -896,55 +1016,30 @@ class ProfileTabsWindow : public views::WidgetObserver,
        }
        return;
      }
@@ -381,7 +381,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
      }
    }
  
-@@ -969,6 +1064,113 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -980,6 +1075,113 @@ class ProfileTabsWindow : public views::WidgetObserver,
      return menu_windows_[index];
    }
  
@@ -495,7 +495,7 @@ index 61f3958b1f2cc..e5aedac47babc 100644
    void RunMenu(const gfx::Point& screen_point) {
      menu_runner_ = std::make_unique<views::MenuRunner>(
          menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
-@@ -1340,6 +1542,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1359,6 +1561,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
    TabSlot menu_tab_;
    std::vector<raw_ptr<ProfileTabsWindow>> menu_windows_;
    std::unique_ptr<ui::SimpleMenuModel> menu_model_;
