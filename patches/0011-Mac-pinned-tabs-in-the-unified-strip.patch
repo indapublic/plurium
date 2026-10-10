@@ -1,0 +1,537 @@
+From f8a9026fe93eaf13897c4cce91831e035b064749 Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Sat, 10 Oct 2026 10:25:18 +1000
+Subject: [PATCH 11/11] Mac: pinned tabs in the unified strip
+
+The tab menu's Pin Tab works now. The pinned tabs of all profiles come
+first in the unified strip, as narrow tabs with just the icon and the
+profile mark; in vertical mode they are tiles in rows above the other
+tabs (one per row when collapsed), outlined like Chromium's.
+
+As in a Chromium window, a tab that gets pinned goes after the pinned
+tabs and one that gets unpinned before the others; dragging and the
+move-tab keys keep pinned tabs among the pinned ones and the others
+among the others.
+---
+ .../ui/views/frame/profile_tabs_mac.mm        |  54 ++++-
+ .../ui/views/frame/unified_tab_strip_mac.h    |  27 ++-
+ .../ui/views/frame/unified_tab_strip_mac.mm   | 191 ++++++++++++------
+ 3 files changed, 202 insertions(+), 70 deletions(-)
+
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index 4b1b77e79f337..661c55d5eb6dc 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -163,9 +163,9 @@ enum MenuCommand {
+ };
+ 
+ // Items of Chromium's tab menu the unified strip has no place for (yet):
+-// pinned tabs, groups and split views aren't shown, and a tab moved to a new
+-// window would join the strip again.
+-constexpr std::array<TabStripModel::ContextMenuCommand, 7>
++// groups and split views aren't shown, and a tab moved to a new window would
++// join the strip again.
++constexpr std::array<TabStripModel::ContextMenuCommand, 6>
+     kHiddenTabMenuCommands = {
+         TabStripModel::CommandAddToSplit,
+         TabStripModel::CommandAddToNewGroup,
+@@ -173,7 +173,6 @@ constexpr std::array<TabStripModel::ContextMenuCommand, 7>
+         TabStripModel::CommandRemoveFromGroup,
+         TabStripModel::CommandMoveToExistingWindow,
+         TabStripModel::CommandMoveTabsToNewWindow,
+-        TabStripModel::CommandTogglePinned,
+ };
+ 
+ // A new tab from the tab menu lands next to the clicked tab in the unified
+@@ -320,6 +319,8 @@ void SelectTab(NSWindow* window) {
+ struct TabSlot {
+   raw_ptr<ProfileTabsWindow> window;
+   raw_ptr<tabs::TabInterface> tab;
++  // Whether the tab was pinned when the order was last reconciled.
++  bool pinned = false;
+ };
+ 
+ std::vector<TabSlot>& TabOrder() {
+@@ -644,6 +645,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       data.loading = contents->IsLoading();
+       data.audible = contents->IsCurrentlyAudible();
+       data.muted = contents->IsAudioMuted();
++      data.pinned = slot.tab->IsPinned();
+       tabs.push_back(std::move(data));
+     }
+     strip_->SetMarkStyle(CurrentMarkStyle());
+@@ -764,6 +766,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
+                       TabChangeType change_type) override {
+     PostUpdateAllStrips();
+   }
++  void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override {
++    PostUpdateAllStrips();
++  }
+ 
+   // Called right before -toggleFullScreen:. AppKit makes the whole tab group
+   // fullscreen; each profile window follows (Chromium updates its own
+@@ -1541,6 +1546,17 @@ class ProfileTabsWindow : public views::WidgetObserver,
+   base::WeakPtrFactory<ProfileTabsWindow> weak_factory_{this};
+ };
+ 
++// Pinned tabs come first in the strip, those of all profiles, as they come
++// first in each window.
++void KeepPinnedTabsFirst(std::vector<TabSlot>& order) {
++  std::stable_partition(order.begin(), order.end(), [](const TabSlot& slot) {
++    return slot.tab->IsPinned();
++  });
++  for (TabSlot& slot : order) {
++    slot.pinned = slot.tab->IsPinned();
++  }
++}
++
+ // Brings the global order in line with the windows' tab strips: drops closed
+ // tabs, keeps each window's tabs in Chromium's order and places new tabs.
+ void ReconcileTabOrder() {
+@@ -1584,6 +1600,7 @@ void ReconcileTabOrder() {
+       }
+     }
+     order = std::move(restored);
++    KeepPinnedTabsFirst(order);
+     if (complete) {
+       saved.keys.clear();
+     }
+@@ -1596,6 +1613,24 @@ void ReconcileTabOrder() {
+            !std::ranges::contains(it->second, slot.tab.get());
+   });
+ 
++  // Like Chromium in the window, a tab that got pinned goes after the pinned
++  // tabs of the strip, one that got unpinned before the other tabs.
++  std::vector<tabs::TabInterface*> repinned;
++  for (const TabSlot& slot : order) {
++    if (slot.tab->IsPinned() != slot.pinned) {
++      repinned.push_back(slot.tab);
++    }
++  }
++  for (tabs::TabInterface* tab : repinned) {
++    const size_t from = IndexOfTab(tab);
++    TabSlot slot = order[from];
++    order.erase(order.begin() + from);
++    slot.pinned = tab->IsPinned();
++    order.insert(std::ranges::find_if(
++                     order, [](const TabSlot& other) { return !other.pinned; }),
++                 slot);
++  }
++
+   // Each window's slots, refilled in Chromium's order of its tabs.
+   for (ProfileTabsWindow* window : windows) {
+     std::vector<size_t> positions;
+@@ -1646,6 +1681,7 @@ void ReconcileTabOrder() {
+       order.insert(order.begin() + position, TabSlot{window, tabs[k]});
+     }
+   }
++  KeepPinnedTabsFirst(order);
+   ScheduleSaveTabOrder();
+ }
+ 
+@@ -1826,7 +1862,15 @@ void FocusTabSoon(ProfileTabsWindow* window, tabs::TabInterface* tab) {
+ void MoveTabInOrder(int from, int to) {
+   std::vector<TabSlot>& order = TabOrder();
+   const int count = static_cast<int>(order.size());
+-  if (from < 0 || from >= count || to < 0 || to >= count || from == to) {
++  if (from < 0 || from >= count || to < 0 || to >= count) {
++    return;
++  }
++  // Pinned tabs stay in front of the others.
++  const int pinned = static_cast<int>(std::ranges::count_if(
++      order, [](const TabSlot& slot) { return slot.tab->IsPinned(); }));
++  to = order[from].tab->IsPinned() ? std::min(to, pinned - 1)
++                                   : std::max(to, pinned);
++  if (from == to) {
+     return;
+   }
+   // A manual move ends the startup restore of the saved order.
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+index 4c6f98c3999c0..66b9564ee8224 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+@@ -12,6 +12,9 @@
+ #include "third_party/skia/include/core/SkColor.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+ #include "ui/base/models/image_model.h"
++#include "ui/gfx/geometry/point.h"
++#include "ui/gfx/geometry/rect.h"
++#include "ui/gfx/geometry/vector2d.h"
+ #include "ui/views/context_menu_controller.h"
+ #include "ui/views/view.h"
+ 
+@@ -47,6 +50,8 @@ struct UnifiedTabData {
+   bool loading = false;
+   bool audible = false;
+   bool muted = false;
++  // Pinned tabs come first and show just their icon.
++  bool pinned = false;
+ };
+ 
+ class UnifiedTabStripDelegate {
+@@ -119,17 +124,24 @@ class UnifiedTabStrip : public views::View,
+       ui::mojom::MenuSourceType source_type) override;
+ 
+  private:
++  // The width of unpinned horizontal tabs.
+   int TabWidth() const;
+-  // The distance between neighboring tabs along the strip.
+-  int TabPitch() const;
++  // Where the tab at `slot` goes when nothing is dragged, in content
++  // coordinates (before vertical scrolling).
++  gfx::Rect SlotBounds(int slot) const;
++  // Vertical: pinned tabs are tiles in rows above the other tabs.
++  int PinnedColumns() const;
++  int RowsTop() const;
++  // Vertical: the height of all tabs, up to the "+" row.
++  int ContentHeight() const;
+   // Vertical: the height for the rows, above the "+" row and the update
+   // button.
+   int VerticalListHeight() const;
+   int UpdateButtonHeight() const;
+   void LayoutHorizontal();
+   void LayoutVertical();
+-  // Where `point` is along the strip, in content coordinates.
+-  int AlongStrip(const gfx::Point& point) const;
++  void LayoutTabs();
++  gfx::Point ToContent(const gfx::Point& point) const;
+   int TabIndexAt(const gfx::Point& point) const;
+   void CancelDrag();
+ 
+@@ -143,13 +155,16 @@ class UnifiedTabStrip : public views::View,
+   // Vertical: how far the rows are scrolled up.
+   int scroll_offset_ = 0;
+   int last_selected_index_ = -1;
++  int pinned_count_ = 0;
+ 
+   int pressed_index_ = -1;
+   int pressed_button_ = 0;  // ui::EF_*_MOUSE_BUTTON
+   gfx::Point press_location_;
+   bool dragging_ = false;
+-  int drag_offset_ = 0;
+-  int drag_x_ = 0;
++  // From the dragged tab's origin to the mouse, and where the tab is, in
++  // content coordinates. A tab moves among the pinned tabs or the others.
++  gfx::Vector2d drag_offset_;
++  gfx::Point drag_origin_;
+   int drop_index_ = -1;
+ };
+ 
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+index c31e772a428a9..a05d88f117230 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+@@ -71,6 +71,12 @@ constexpr int kVerticalTabNarrowWidth = 100;
+ // Chromium's vertical new tab button keeps the region's horizontal padding.
+ constexpr int kVerticalNewTabInset = 12;
+ constexpr int kNewTabButtonSpacing = 6;
++// Pinned tabs show just their icon.
++constexpr int kPinnedTabWidth = 40;
++// Vertical: pinned tabs are tiles in rows, as in Chromium.
++constexpr int kVerticalPinnedTileMinWidth = 40;
++constexpr int kVerticalPinnedTileSpacing = 4;
++constexpr int kVerticalPinnedSpacing = 8;
+ 
+ }  // namespace
+ 
+@@ -131,7 +137,8 @@ class UnifiedTabView : public views::View {
+     icon_->SetImage(data_.favicon);
+     title_->SetText(data_.title);
+     SetTooltipText(data_.tooltip);
+-    GetViewAccessibility().SetName(data_.title);
++    GetViewAccessibility().SetName(data_.pinned ? data_.title + u" - Pinned"
++                                                : data_.title);
+     if (data_.loading) {
+       throbber_->Start();
+     } else {
+@@ -162,7 +169,8 @@ class UnifiedTabView : public views::View {
+   void Layout(PassKey) override {
+     const int center_y = TopInset() + (height() - TopInset()) / 2;
+     // Collapsed vertical tabs show just the icon, like Chromium's.
+-    const bool narrow = width() < (strip_->vertical() ? kVerticalTabNarrowWidth
++    const bool narrow =
++        data_.pinned || width() < (strip_->vertical() ? kVerticalTabNarrowWidth
+                                                       : kTabNarrowWidth);
+     int left = kTabPadding;
+     int right = width() - kTabPadding;
+@@ -229,6 +237,14 @@ class UnifiedTabView : public views::View {
+           gfx::RectF(2, kTabTopInset, width() - 4,
+                      height() - kTabTopInset - kHoverBottomInset + 1),
+           kCornerRadius, flags);
++    } else if (data_.pinned && strip_->vertical()) {
++      // Chromium outlines its vertical pinned tabs.
++      flags.setColor(colors->GetColor(kColorVerticalTabPinnedOutline));
++      flags.setStyle(cc::PaintFlags::kStroke_Style);
++      flags.setStrokeWidth(1);
++      gfx::RectF outline(GetLocalBounds());
++      outline.Inset(0.5f);
++      canvas->DrawRoundRect(outline, kCornerRadius, flags);
+     }
+ 
+     if (SkColorGetA(data_.profile_color)) {
+@@ -405,9 +421,13 @@ UnifiedTabStrip::UnifiedTabStrip(UnifiedTabStripDelegate* delegate)
+ UnifiedTabStrip::~UnifiedTabStrip() = default;
+ 
+ void UnifiedTabStrip::SetTabs(const std::vector<UnifiedTabData>& tabs) {
+-  if (dragging_ && tabs.size() != tabs_.size()) {
++  const int pinned_count = static_cast<int>(std::ranges::count_if(
++      tabs, [](const UnifiedTabData& data) { return data.pinned; }));
++  if (dragging_ &&
++      (tabs.size() != tabs_.size() || pinned_count != pinned_count_)) {
+     CancelDrag();
+   }
++  pinned_count_ = pinned_count;
+   while (tabs_.size() < tabs.size()) {
+     auto* tab = AddChildView(std::make_unique<UnifiedTabView>(this));
+     tab->set_context_menu_controller(this);
+@@ -428,13 +448,12 @@ void UnifiedTabStrip::SetTabs(const std::vector<UnifiedTabData>& tabs) {
+       selected == tabs.end() ? -1 : static_cast<int>(selected - tabs.begin());
+   if (vertical_ && selected_index >= 0 &&
+       selected_index != last_selected_index_) {
+-    const int pitch = TabPitch();
++    const gfx::Rect bounds = SlotBounds(selected_index);
+     const int list_height = VerticalListHeight();
+-    const int top = selected_index * pitch;
+-    if (top < scroll_offset_) {
+-      scroll_offset_ = top;
+-    } else if (top + kVerticalTabHeight > scroll_offset_ + list_height) {
+-      scroll_offset_ = top + kVerticalTabHeight - list_height;
++    if (bounds.y() < scroll_offset_) {
++      scroll_offset_ = bounds.y();
++    } else if (bounds.bottom() > scroll_offset_ + list_height) {
++      scroll_offset_ = bounds.bottom() - list_height;
+     }
+   }
+   last_selected_index_ = selected_index;
+@@ -479,11 +498,12 @@ void UnifiedTabStrip::ActivateTabView(const UnifiedTabView* tab) {
+ }
+ 
+ int UnifiedTabStrip::TabWidth() const {
+-  const int count = static_cast<int>(tabs_.size());
+-  if (!count) {
++  const int count = static_cast<int>(tabs_.size()) - pinned_count_;
++  if (count <= 0) {
+     return kTabMaxWidth;
+   }
+-  int available = width() - kNewTabButtonSize - 2 * kNewTabButtonSpacing;
++  int available = width() - pinned_count_ * kPinnedTabWidth -
++                  kNewTabButtonSize - 2 * kNewTabButtonSpacing;
+   if (update_button_->GetVisible()) {
+     available -=
+         update_button_->GetPreferredSize().width() + kNewTabButtonSpacing;
+@@ -491,8 +511,50 @@ int UnifiedTabStrip::TabWidth() const {
+   return std::clamp(available / count, kTabMinWidth, kTabMaxWidth);
+ }
+ 
+-int UnifiedTabStrip::TabPitch() const {
+-  return vertical_ ? kVerticalTabHeight + kVerticalTabSpacing : TabWidth();
++gfx::Rect UnifiedTabStrip::SlotBounds(int slot) const {
++  const int unpinned = slot - pinned_count_;
++  if (!vertical_) {
++    if (unpinned < 0) {
++      return gfx::Rect(slot * kPinnedTabWidth, 0, kPinnedTabWidth, height());
++    }
++    const int tab_width = TabWidth();
++    return gfx::Rect(pinned_count_ * kPinnedTabWidth + unpinned * tab_width, 0,
++                     tab_width, height());
++  }
++  if (unpinned < 0) {
++    const int columns = PinnedColumns();
++    const int tile_width =
++        (width() - (columns - 1) * kVerticalPinnedTileSpacing) / columns;
++    return gfx::Rect(
++        (slot % columns) * (tile_width + kVerticalPinnedTileSpacing),
++        (slot / columns) * (kVerticalTabHeight + kVerticalPinnedTileSpacing),
++        tile_width, kVerticalTabHeight);
++  }
++  return gfx::Rect(
++      0, RowsTop() + unpinned * (kVerticalTabHeight + kVerticalTabSpacing),
++      width(), kVerticalTabHeight);
++}
++
++int UnifiedTabStrip::PinnedColumns() const {
++  return std::max(
++      1, (width() + kVerticalPinnedTileSpacing) /
++             (kVerticalPinnedTileMinWidth + kVerticalPinnedTileSpacing));
++}
++
++int UnifiedTabStrip::RowsTop() const {
++  if (!pinned_count_) {
++    return 0;
++  }
++  const int rows = (pinned_count_ + PinnedColumns() - 1) / PinnedColumns();
++  return rows * kVerticalTabHeight + (rows - 1) * kVerticalPinnedTileSpacing +
++         kVerticalPinnedSpacing;
++}
++
++int UnifiedTabStrip::ContentHeight() const {
++  const int count = static_cast<int>(tabs_.size());
++  return count > pinned_count_
++             ? SlotBounds(count - 1).bottom() + kVerticalTabSpacing
++             : RowsTop();
+ }
+ 
+ int UnifiedTabStrip::UpdateButtonHeight() const {
+@@ -508,8 +570,8 @@ int UnifiedTabStrip::VerticalListHeight() const {
+   return list_height;
+ }
+ 
+-int UnifiedTabStrip::AlongStrip(const gfx::Point& point) const {
+-  return vertical_ ? point.y() + scroll_offset_ : point.x();
++gfx::Point UnifiedTabStrip::ToContent(const gfx::Point& point) const {
++  return vertical_ ? point + gfx::Vector2d(0, scroll_offset_) : point;
+ }
+ 
+ int UnifiedTabStrip::TabIndexAt(const gfx::Point& point) const {
+@@ -530,8 +592,6 @@ void UnifiedTabStrip::Layout(PassKey) {
+ }
+ 
+ void UnifiedTabStrip::LayoutVertical() {
+-  const int count = static_cast<int>(tabs_.size());
+-  const int pitch = TabPitch();
+   // The update button takes the bottom row. The "+" row follows the last tab
+   // and stays above it while the list scrolls.
+   const int list_height = VerticalListHeight();
+@@ -539,53 +599,51 @@ void UnifiedTabStrip::LayoutVertical() {
+     update_button_->SetBounds(0, height() - UpdateButtonHeight(), width(),
+                               UpdateButtonHeight());
+   }
+-  scroll_offset_ = std::clamp(scroll_offset_, 0,
+-                              std::max(0, count * pitch - list_height));
+-  new_tab_button_->SetBounds(
+-      kVerticalNewTabInset,
+-      std::min(count * pitch - scroll_offset_,
+-               list_height + kVerticalTabSpacing),
+-      width() - 2 * kVerticalNewTabInset, kVerticalTabHeight);
+-  const auto place = [&](UnifiedTabView* tab, int y) {
+-    tab->SetBounds(0, y - scroll_offset_, width(), kVerticalTabHeight);
+-    tab->SetVisible(tab->y() + tab->height() <= list_height &&
+-                    tab->bounds().bottom() > 0);
++  const int content_height = ContentHeight();
++  scroll_offset_ =
++      std::clamp(scroll_offset_, 0, std::max(0, content_height - list_height));
++  new_tab_button_->SetBounds(kVerticalNewTabInset,
++                             std::min(content_height - scroll_offset_,
++                                      list_height + kVerticalTabSpacing),
++                             width() - 2 * kVerticalNewTabInset,
++                             kVerticalTabHeight);
++  for (UnifiedTabView* tab : tabs_) {
++    tab->SetShowSeparator(false);
++  }
++  LayoutTabs();
++}
++
++void UnifiedTabStrip::LayoutTabs() {
++  const int list_height = VerticalListHeight();
++  const auto place = [&](UnifiedTabView* tab, const gfx::Rect& bounds) {
++    tab->SetBoundsRect(bounds -
++                       gfx::Vector2d(0, vertical_ ? scroll_offset_ : 0));
++    if (vertical_) {
++      tab->SetVisible(tab->bounds().bottom() <= list_height &&
++                      tab->bounds().bottom() > 0);
++    }
+   };
+   int slot = 0;
+-  for (int i = 0; i < count; ++i) {
+-    tabs_[i]->SetShowSeparator(false);
++  for (int i = 0; i < static_cast<int>(tabs_.size()); ++i) {
+     if (dragging_ && i == pressed_index_) {
+       continue;
+     }
+     if (dragging_ && slot == drop_index_) {
+       ++slot;
+     }
+-    place(tabs_[i], slot * pitch);
++    place(tabs_[i], SlotBounds(slot));
+     ++slot;
+   }
+   if (dragging_) {
+-    place(tabs_[pressed_index_], drag_x_);
++    place(tabs_[pressed_index_],
++          gfx::Rect(drag_origin_, SlotBounds(drop_index_).size()));
+     tabs_[pressed_index_]->SetVisible(true);
+   }
+ }
+ 
+ void UnifiedTabStrip::LayoutHorizontal() {
+-  const int tab_width = TabWidth();
+   const int count = static_cast<int>(tabs_.size());
+-  int slot = 0;
+-  for (int i = 0; i < count; ++i) {
+-    if (dragging_ && i == pressed_index_) {
+-      continue;
+-    }
+-    if (dragging_ && slot == drop_index_) {
+-      ++slot;
+-    }
+-    tabs_[i]->SetBounds(slot * tab_width, 0, tab_width, height());
+-    ++slot;
+-  }
+-  if (dragging_) {
+-    tabs_[pressed_index_]->SetBounds(drag_x_, 0, tab_width, height());
+-  }
++  LayoutTabs();
+   // Separators between tabs, but not next to the active or a hovered tab,
+   // nor right before a profile mark at the leading edge, which divides the
+   // tabs already.
+@@ -602,7 +660,7 @@ void UnifiedTabStrip::LayoutHorizontal() {
+         !(leading_marks && SkColorGetA(tabs_[i + 1]->data().profile_color)));
+   }
+   new_tab_button_->SetBounds(
+-      count * tab_width + kNewTabButtonSpacing,
++      (count ? SlotBounds(count - 1).right() : 0) + kNewTabButtonSpacing,
+       kTabTopInset + (height() - kTabTopInset - kNewTabButtonSize) / 2,
+       kNewTabButtonSize, kNewTabButtonSize);
+   if (update_button_->GetVisible()) {
+@@ -692,23 +750,38 @@ bool UnifiedTabStrip::OnMouseDragged(const ui::MouseEvent& event) {
+   if (pressed_index_ < 0 || pressed_button_ != ui::EF_LEFT_MOUSE_BUTTON) {
+     return false;
+   }
+-  const int pitch = TabPitch();
+   if (!dragging_) {
+     if (!ExceededDragThreshold(event.location() - press_location_)) {
+       return true;
+     }
+     dragging_ = true;
+-    const UnifiedTabView* tab = tabs_[pressed_index_];
+-    drag_offset_ = AlongStrip(press_location_) -
+-                   AlongStrip(gfx::Point(tab->x(), tab->y()));
++    drag_offset_ =
++        ToContent(press_location_) - SlotBounds(pressed_index_).origin();
+     ReorderChildView(tabs_[pressed_index_], children().size());
+   }
+-  const int count = static_cast<int>(tabs_.size());
+-  // `drag_x_` is the dragged tab's position along the strip (x, or y in the
+-  // scrolled rows).
+-  drag_x_ = std::clamp(AlongStrip(event.location()) - drag_offset_, 0,
+-                       (count - 1) * pitch);
+-  drop_index_ = std::clamp((drag_x_ + pitch / 2) / pitch, 0, count - 1);
++  // The dragged tab stays among the pinned tabs or among the others, and
++  // drops into the nearest of their slots.
++  const bool pinned = pressed_index_ < pinned_count_;
++  const int first = pinned ? 0 : pinned_count_;
++  const int last =
++      pinned ? pinned_count_ - 1 : static_cast<int>(tabs_.size()) - 1;
++  gfx::Rect area = SlotBounds(first);
++  for (int i = first + 1; i <= last; ++i) {
++    area.Union(SlotBounds(i));
++  }
++  const gfx::Size size = SlotBounds(pressed_index_).size();
++  drag_origin_ = ToContent(event.location()) - drag_offset_;
++  drag_origin_.SetToMax(area.origin());
++  drag_origin_.SetToMin(
++      gfx::Point(area.right() - size.width(), area.bottom() - size.height()));
++  const gfx::Point center = gfx::Rect(drag_origin_, size).CenterPoint();
++  drop_index_ = first;
++  for (int i = first + 1; i <= last; ++i) {
++    if ((SlotBounds(i).CenterPoint() - center).LengthSquared() <
++        (SlotBounds(drop_index_).CenterPoint() - center).LengthSquared()) {
++      drop_index_ = i;
++    }
++  }
+   DeprecatedLayoutImmediately();
+   return true;
+ }
+-- 
+2.56.0
+
