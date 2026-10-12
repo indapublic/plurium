@@ -36,6 +36,22 @@ window_state() {
   $CDP Browser.getWindowBounds "{\"windowId\":$1}" |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["bounds"]["windowState"])'
 }
+set_restore_on_startup() {  # "Continue where you left off" through Settings, in all 4
+  # Since Chromium 155 the copy that seed-profiles.py --restore writes straight
+  # into Preferences is reset as tampered (session.restore_on_startup is tracked).
+  local q t
+  for q in Alpha Bravo Charlie Delta; do
+    t=$(target "$q")
+    $CDP Page.navigate '{"url":"chrome://settings/onStartup"}' --target "$t" > /dev/null
+    sleep 2
+    $CDP Runtime.evaluate '{"expression":"new Promise(r => chrome.settingsPrivate.setPref(\"session.restore_on_startup\", 1, \"\", r))","awaitPromise":true}' \
+      --target "$t" > /dev/null
+    $CDP Runtime.evaluate '{"expression":"new Promise(r => chrome.settingsPrivate.getPref(\"session.restore_on_startup\", p => r(p.value)))","awaitPromise":true,"returnByValue":true}' \
+      --target "$t" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"].get("value"))'
+    $CDP Page.navigate "{\"url\":\"http://127.0.0.1:8765/?$q\"}" --target "$t" > /dev/null
+    sleep 1
+  done
+}
 quit_browser() {
   $CDP Browser.close > /dev/null 2>&1
   for _ in $(seq 1 20); do
@@ -56,7 +72,7 @@ curl -fsS -o /dev/null http://127.0.0.1:8765/ 2> /dev/null ||
 sleep 1
 echo "build: $OUT, profile dir: $USER_DATA_DIR"
 
-python3 "$TOOLS/seed-profiles.py" --restore > /dev/null
+python3 "$TOOLS/seed-profiles.py" > /dev/null
 LOG=$LOG1 URL_BASE=http://127.0.0.1:8765/ "$TOOLS/open-profiles.sh" > /dev/null
 
 check "4 profile windows in one group" \
@@ -113,6 +129,10 @@ for q in charlie2 incognito; do
   sleep 3
 done
 check "closing two profile tabs keeps the browser alive" "alive && no_crash $LOG1"
+
+restore=$(set_restore_on_startup | sort -u | tr '\n' ' ')
+check "Continue where you left off set through Settings in all 4 ($restore)" "[ '$restore' = '1 ' ]"
+sleep 2
 
 quit_browser
 nohup "$TOOLS/run-test.sh" > "$LOG2" 2>&1 &

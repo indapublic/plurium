@@ -5,6 +5,8 @@ Profiles: Default=Alpha, "Profile 1"=Bravo, "Profile 2"=Charlie, "Profile 3"=Del
 Open one with: plurium/tools/run-test.sh --profile-directory="Profile 1"
 Each profile also gets its own theme color (browser.theme.user_color2).
 Pass --restore to also set "Continue where you left off" in every profile.
+Chromium 155+ resets that one as tampered (a tracked pref); checklist.sh
+sets it through chrome://settings instead.
 """
 import json
 import os
