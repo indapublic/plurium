@@ -1,6 +1,6 @@
-From 4f0bf58d60049367fbc84634c3836d60c41ae94c Mon Sep 17 00:00:00 2001
+From e18db13bdcfbad06eef1a677747e702e24c1cacc Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
-Date: Tue, 6 Oct 2026 13:01:22 +1000
+Date: Tue, 13 Oct 2026 06:33:48 +1000
 Subject: [PATCH 06/12] Mac: Plurium updates through Homebrew
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -73,10 +73,10 @@ index 237b2a8517c3c..44572515e7aea 100644
    </if>
    <if expr="is_chromeos">
 diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
-index 01d5d84736751..36876a0a199ef 100644
+index 7708b7374d1d1..def01c3251ae2 100644
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2330,6 +2330,8 @@ static_library("ui") {
+@@ -2555,6 +2555,8 @@ static_library("ui") {
        "views/frame/immersive_mode_controller_mac.mm",
        "views/frame/immersive_mode_overlay_views_mac.h",
        "views/frame/immersive_mode_overlay_views_mac.mm",
@@ -828,7 +828,7 @@ index 0000000000000..c2021ebce72e8
 +}
 +@end
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index b65f7932b3e07..406ad95d5d71e 100644
+index 1274c4eb667d8..5c3a5823170eb 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 @@ -54,6 +54,7 @@
@@ -839,7 +839,7 @@ index b65f7932b3e07..406ad95d5d71e 100644
  #include "chrome/browser/ui/views/frame/unified_tab_strip_mac.h"
  #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
  #include "chrome/common/chrome_paths.h"
-@@ -509,6 +510,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -511,6 +512,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
        tabs.push_back(std::move(data));
      }
      strip_->SetTabs(tabs);
@@ -847,7 +847,7 @@ index b65f7932b3e07..406ad95d5d71e 100644
    }
  
    // views::WidgetObserver:
-@@ -650,6 +652,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -652,6 +654,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
      RunMenu(screen_point);
    }
  
@@ -856,7 +856,7 @@ index b65f7932b3e07..406ad95d5d71e 100644
    void ShowNewTabMenu(const gfx::Point& screen_point) override {
      menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
      menu_windows_.clear();
-@@ -1447,6 +1451,7 @@ void ObserveBrowserWidget(views::Widget* widget, BrowserView* browser_view) {
+@@ -1449,6 +1453,7 @@ void ObserveBrowserWidget(views::Widget* widget, BrowserView* browser_view) {
      return;
    }
    EnsureWindowNotifications();

@@ -1,4 +1,4 @@
-From 89d6b60440cd977747f3ea9387e7d3c1c1c0cc3a Mon Sep 17 00:00:00 2001
+From e00d7ac0b0b88bc8314f509b0a8cd91af989e8ee Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 07:44:30 +1000
 Subject: [PATCH 01/12] Mac: join profile windows into one native window tab
@@ -28,10 +28,10 @@ short hooks in BrowserNativeWidgetMac and BrowserFrameViewMac.
  create mode 100644 chrome/browser/ui/views/frame/profile_tabs_mac.mm
 
 diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
-index 0ab25c63c9f39..a577cf07e7a31 100644
+index 82f397571fefa..20afd5c40113a 100644
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2330,6 +2330,8 @@ static_library("ui") {
+@@ -2555,6 +2555,8 @@ static_library("ui") {
        "views/frame/immersive_mode_controller_mac.mm",
        "views/frame/immersive_mode_overlay_views_mac.h",
        "views/frame/immersive_mode_overlay_views_mac.mm",
@@ -41,7 +41,7 @@ index 0ab25c63c9f39..a577cf07e7a31 100644
  
      deps += [
 diff --git a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
-index 39c36aab3c4d2..4b7d632d5ecdf 100644
+index 8354a9179ef79..52c94afb76956 100644
 --- a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
 +++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
 @@ -38,6 +38,7 @@
@@ -60,7 +60,7 @@ index 39c36aab3c4d2..4b7d632d5ecdf 100644
    return params;
  }
  
-@@ -367,7 +369,7 @@ gfx::RoundedCornersF BrowserFrameViewMac::GetWindowRoundedCorners() const {
+@@ -366,7 +368,7 @@ gfx::RoundedCornersF BrowserFrameViewMac::GetWindowRoundedCorners() const {
  // BrowserFrameViewMac, views::FrameView implementation:
  
  gfx::Rect BrowserFrameViewMac::GetBoundsForClientView() const {
@@ -70,10 +70,10 @@ index 39c36aab3c4d2..4b7d632d5ecdf 100644
  
  gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
 diff --git a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
-index fb1e87f834934..98c24a177299f 100644
+index 03f7acd0bf348..ce2d8b0c52267 100644
 --- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 +++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
-@@ -42,6 +42,7 @@
+@@ -43,6 +43,7 @@
  #include "chrome/browser/ui/views/frame/browser_view.h"
  #include "chrome/browser/ui/views/frame/browser_widget.h"
  #include "chrome/browser/ui/views/frame/glass_frame_service.h"
@@ -81,7 +81,7 @@ index fb1e87f834934..98c24a177299f 100644
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
  #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_utils.h"
  #include "chrome/browser/ui/web_applications/app_browser_controller.h"
-@@ -264,6 +265,11 @@ int32_t BrowserNativeWidgetMac::SheetOffsetY() {
+@@ -266,6 +267,11 @@ int32_t BrowserNativeWidgetMac::SheetOffsetY() {
  void BrowserNativeWidgetMac::GetWindowFrameTitlebarHeight(
      bool* override_titlebar_height,
      float* titlebar_height) {
@@ -93,7 +93,7 @@ index fb1e87f834934..98c24a177299f 100644
    if (browser_view_ && browser_view_->browser_widget() &&
        browser_view_->browser_widget()->GetFrameView()) {
      *override_titlebar_height = true;
-@@ -790,6 +796,7 @@ void BrowserNativeWidgetMac::OnWidgetInitDone() {
+@@ -792,6 +798,7 @@ void BrowserNativeWidgetMac::OnWidgetInitDone() {
      UpdateGlassEligibility(
          glass_frame_service->IsBrowserWindowEligible(browser_view_->browser()));
    }

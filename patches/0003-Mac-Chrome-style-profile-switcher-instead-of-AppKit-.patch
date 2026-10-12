@@ -1,4 +1,4 @@
-From 624fe20217cb85ea3b9b786b58a8008e20b763ac Mon Sep 17 00:00:00 2001
+From 2660ee5330b281e0d38fe14289e056dce9252761 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 09:31:44 +1000
 Subject: [PATCH 03/12] Mac: Chrome-style profile switcher instead of AppKit's
@@ -26,10 +26,10 @@ have joined the group (or Chromium itself toggles fullscreen on them).
  3 files changed, 391 insertions(+), 49 deletions(-)
 
 diff --git a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
-index 4b7d632d5ecdf..74bfa0cb27236 100644
+index 52c94afb76956..3822117bdc106 100644
 --- a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
 +++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
-@@ -390,6 +390,9 @@ gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
+@@ -389,6 +389,9 @@ gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
  }
  
  int BrowserFrameViewMac::NonClientHitTest(const gfx::Point& point) {

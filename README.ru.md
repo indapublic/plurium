@@ -16,7 +16,7 @@ Profile Color). Профили (куки, логины, расширения) и
 (`com.indapublic.plurium`). Свои данные оно хранит в
 `~/Library/Application Support/Plurium`, обычный Chromium рядом не трогает.
 
-Базовая версия: **154.0.8037.98** (Stable для Mac на 2026-10-05), ветка `profile-tabs`.
+Базовая версия: **155.0.8059.40** (Stable для Mac на 2026-10-13), ветка `profile-tabs`.
 
 ```
 ● ● ●  [Gmail] [GitHub] [Jira] [Slack] [Bank] [Docs]  +
@@ -184,10 +184,10 @@ git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
 export PATH="$PWD/depot_tools:$PATH"
 fetch --nohooks chromium              # полная история, нужны теги
 cd src
-VER=154.0.8037.98
+VER=155.0.8059.40
 git fetch origin "+refs/tags/$VER:refs/tags/$VER"
 git checkout -b profile-tabs "tags/$VER"
-git am /Volumes/Workspace/chromium/plurium/patches/000*.patch
+git am /Volumes/Workspace/chromium/plurium/patches/00*.patch
 gclient sync -D --with_branch_heads --with_tags
 ```
 
@@ -249,7 +249,7 @@ macOS спросит доступ к ключу «Chromium Safe Storage» в с�
 
 ```bash
 cd /Volumes/Workspace/chromium/src
-OLD=154.0.8037.98
+OLD=155.0.8059.40
 NEW=<новая stable-версия с chromiumdash.appspot.com>
 git fetch origin "+refs/tags/$NEW:refs/tags/$NEW"
 git rebase --onto "tags/$NEW" "tags/$OLD" profile-tabs

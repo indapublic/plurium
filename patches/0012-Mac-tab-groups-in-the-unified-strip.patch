@@ -1,6 +1,6 @@
-From 5044f38831bf64918a3992843fa1552467d48588 Mon Sep 17 00:00:00 2001
+From a7d08b82db832827361e5fa245684e49ec9e11cd Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
-Date: Sat, 10 Oct 2026 11:13:17 +1000
+Date: Tue, 13 Oct 2026 06:33:58 +1000
 Subject: [PATCH 12/12] Mac: tab groups in the unified strip
 
 The tab menu's group items work now. A group belongs to the window of its
@@ -23,7 +23,7 @@ keys join, leave or jump over groups like Chromium's.
  3 files changed, 1060 insertions(+), 175 deletions(-)
 
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index 987945e2f54d4..274dae7bab682 100644
+index ecfffad8a214f..8bf8750465216 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 @@ -51,9 +51,12 @@
@@ -47,7 +47,7 @@ index 987945e2f54d4..274dae7bab682 100644
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
  #include "chrome/common/chrome_paths.h"
  #include "chrome/common/pref_names.h"
-@@ -72,6 +76,9 @@
+@@ -73,6 +77,9 @@
  #include "components/sessions/core/tab_restore_service.h"
  #include "components/sessions/core/tab_restore_service_observer.h"
  #include "components/sessions/core/tab_restore_types.h"
@@ -57,7 +57,7 @@ index 987945e2f54d4..274dae7bab682 100644
  #include "components/tabs/public/tab_interface.h"
  #include "content/public/browser/context_menu_params.h"
  #include "content/public/browser/web_contents.h"
-@@ -86,6 +93,7 @@
+@@ -87,6 +94,7 @@
  #include "ui/gfx/geometry/rect.h"
  #include "ui/gfx/geometry/rect_conversions.h"
  #include "ui/gfx/geometry/rect_f.h"
@@ -65,7 +65,7 @@ index 987945e2f54d4..274dae7bab682 100644
  #include "ui/menus/simple_menu_model.h"
  #include "ui/views/accessibility/view_accessibility.h"
  #include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
-@@ -99,6 +107,7 @@
+@@ -100,6 +108,7 @@
  #include "ui/views/widget/widget.h"
  #include "ui/views/widget/widget_observer.h"
  #include "ui/views/window/non_client_view.h"
@@ -73,7 +73,7 @@ index 987945e2f54d4..274dae7bab682 100644
  
  namespace profile_tabs {
  namespace {
-@@ -166,14 +175,11 @@ enum MenuCommand {
+@@ -167,14 +176,11 @@ enum MenuCommand {
  };
  
  // Items of Chromium's tab menu the unified strip has no place for (yet):
@@ -91,7 +91,7 @@ index 987945e2f54d4..274dae7bab682 100644
          TabStripModel::CommandMoveToExistingWindow,
          TabStripModel::CommandMoveTabsToNewWindow,
  };
-@@ -200,6 +206,11 @@ constexpr std::array<MarkStyleChoice, 6> kMarkStyleChoices = {{
+@@ -201,6 +207,11 @@ constexpr std::array<MarkStyleChoice, 6> kMarkStyleChoices = {{
  
  class ProfileTabsWindow;
  
@@ -103,7 +103,7 @@ index 987945e2f54d4..274dae7bab682 100644
  class NoHitsTargeterDelegate : public views::ViewTargeterDelegate {
   public:
    // views::ViewTargeterDelegate:
-@@ -463,7 +474,12 @@ void RefreshAllLayouts();
+@@ -464,7 +475,12 @@ void RefreshAllLayouts();
  void PostRefreshAllLayouts();
  void PostUpdateAllStrips();
  void ScheduleSaveTabOrder();
@@ -117,7 +117,7 @@ index 987945e2f54d4..274dae7bab682 100644
  void EnsureWindowNotifications();
  void EnsureTabHotkeys();
  
-@@ -544,6 +560,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -545,6 +561,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
    TabStripModel* model() const { return browser()->GetTabStripModel(); }
    Profile* profile() const { return browser()->GetProfile(); }
    bool attached() const { return attached_; }
@@ -126,7 +126,7 @@ index 987945e2f54d4..274dae7bab682 100644
    int ordinal() const { return ordinal_; }
    bool system_titlebar() const { return system_titlebar_; }
    NSWindow* ns_window() const { return GetNSWindow(); }
-@@ -641,6 +659,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -642,6 +660,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
      const tabs::TabInterface* active =
          active_index >= 0 ? model()->GetTabAtIndex(active_index) : nullptr;
      std::vector<UnifiedTabData> tabs;
@@ -135,7 +135,7 @@ index 987945e2f54d4..274dae7bab682 100644
      for (const TabSlot& slot : TabOrder()) {
        content::WebContents* contents = slot.tab->GetContents();
        UnifiedTabData data;
-@@ -658,10 +678,29 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -660,10 +680,29 @@ class ProfileTabsWindow : public views::WidgetObserver,
        data.audible = contents->IsCurrentlyAudible();
        data.muted = contents->IsAudioMuted();
        data.pinned = slot.tab->IsPinned();
@@ -166,7 +166,7 @@ index 987945e2f54d4..274dae7bab682 100644
      strip_->SetUpdateVersion(plurium_update::AvailableVersion());
    }
  
-@@ -781,6 +820,16 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -783,6 +822,16 @@ class ProfileTabsWindow : public views::WidgetObserver,
    void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override {
      PostUpdateAllStrips();
    }
@@ -183,7 +183,7 @@ index 987945e2f54d4..274dae7bab682 100644
  
    // Called right before -toggleFullScreen:. AppKit makes the whole tab group
    // fullscreen; each profile window follows (Chromium updates its own
-@@ -821,7 +870,57 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -823,7 +872,57 @@ class ProfileTabsWindow : public views::WidgetObserver,
      }
    }
  
@@ -242,7 +242,7 @@ index 987945e2f54d4..274dae7bab682 100644
  
    void NewTab() override { chrome::ExecuteCommand(browser(), IDC_NEW_TAB); }
  
-@@ -1080,6 +1179,41 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1082,6 +1181,41 @@ class ProfileTabsWindow : public views::WidgetObserver,
      return menu_windows_[index];
    }
  
@@ -284,7 +284,7 @@ index 987945e2f54d4..274dae7bab682 100644
    static bool IsOwnCommand(int command_id) {
      return command_id >= kFirstMenuCommand && command_id <= kLastMenuCommand;
    }
-@@ -1158,6 +1292,13 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1160,6 +1294,13 @@ class ProfileTabsWindow : public views::WidgetObserver,
          }
          return;
        }
@@ -298,7 +298,7 @@ index 987945e2f54d4..274dae7bab682 100644
        case TabStripModel::CommandNewTabToRight:
        case TabStripModel::CommandDuplicate:
          // Right after the tab, also when it is the last one of its window.
-@@ -1546,6 +1687,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1548,6 +1689,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    raw_ptr<views::Widget> widget_;
    raw_ptr<BrowserView> browser_view_;
@@ -306,7 +306,7 @@ index 987945e2f54d4..274dae7bab682 100644
    std::u16string title_;
    bool attach_posted_ = false;
    bool attach_after_fullscreen_ = false;
-@@ -1568,6 +1710,11 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1570,6 +1712,11 @@ class ProfileTabsWindow : public views::WidgetObserver,
    std::unique_ptr<ui::SimpleMenuModel> menu_model_;
    // `menu_model_` while it is the tab menu.
    raw_ptr<TabMenuModel> tab_menu_ = nullptr;
@@ -318,7 +318,7 @@ index 987945e2f54d4..274dae7bab682 100644
    std::unique_ptr<ui::SimpleMenuModel> submenu_model_;
    std::unique_ptr<ui::SimpleMenuModel> mark_style_menu_model_;
    std::unique_ptr<views::MenuRunner> menu_runner_;
-@@ -1596,6 +1743,31 @@ void KeepPinnedTabsFirst(std::vector<TabSlot>& order) {
+@@ -1598,6 +1745,31 @@ void KeepPinnedTabsFirst(std::vector<TabSlot>& order) {
    }
  }
  
@@ -350,7 +350,7 @@ index 987945e2f54d4..274dae7bab682 100644
  // Brings the global order in line with the windows' tab strips: drops closed
  // tabs, keeps each window's tabs in Chromium's order and places new tabs.
  void ReconcileTabOrder() {
-@@ -1640,6 +1812,7 @@ void ReconcileTabOrder() {
+@@ -1642,6 +1814,7 @@ void ReconcileTabOrder() {
      }
      order = std::move(restored);
      KeepPinnedTabsFirst(order);
@@ -358,7 +358,7 @@ index 987945e2f54d4..274dae7bab682 100644
      if (complete) {
        saved.keys.clear();
      }
-@@ -1721,6 +1894,7 @@ void ReconcileTabOrder() {
+@@ -1723,6 +1896,7 @@ void ReconcileTabOrder() {
      }
    }
    KeepPinnedTabsFirst(order);
@@ -366,7 +366,7 @@ index 987945e2f54d4..274dae7bab682 100644
    ScheduleSaveTabOrder();
  }
  
-@@ -1896,25 +2070,57 @@ void FocusTabSoon(ProfileTabsWindow* window, tabs::TabInterface* tab) {
+@@ -1898,25 +2072,57 @@ void FocusTabSoon(ProfileTabsWindow* window, tabs::TabInterface* tab) {
            base::Unretained(window), base::Unretained(tab)));
  }
  
@@ -432,7 +432,7 @@ index 987945e2f54d4..274dae7bab682 100644
    order.erase(order.begin() + from);
    order.insert(order.begin() + to, moved);
    int position = 0;
-@@ -1923,15 +2129,115 @@ void MoveTabInOrder(int from, int to) {
+@@ -1925,15 +2131,115 @@ void MoveTabInOrder(int from, int to) {
        ++position;
      }
    }
@@ -551,7 +551,7 @@ index 987945e2f54d4..274dae7bab682 100644
  void UpdateAllTitles() {
    for (ProfileTabsWindow* window : AllWindows()) {
      if (window->attached()) {
-@@ -2155,16 +2461,21 @@ bool HandleTabHotkey(NSEvent* event) {
+@@ -2157,16 +2463,21 @@ bool HandleTabHotkey(NSEvent* event) {
    }
    switch (strip_key) {
      case StripKey::kNext:

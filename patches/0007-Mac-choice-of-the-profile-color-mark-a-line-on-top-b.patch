@@ -1,6 +1,6 @@
-From 6a0c9e3c1940c28dd50adb9f972e8b26db0a4c6a Mon Sep 17 00:00:00 2001
+From 29fb058057b92f4983894544aebef4c6e60cb115 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
-Date: Tue, 6 Oct 2026 18:41:58 +1000
+Date: Tue, 13 Oct 2026 06:33:49 +1000
 Subject: [PATCH 07/12] Mac: choice of the profile color mark, a line on top by
  default
 MIME-Version: 1.0
@@ -24,10 +24,10 @@ the separator in front of the tab; the lines keep it.
  3 files changed, 175 insertions(+), 24 deletions(-)
 
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index 406ad95d5d71e..e168eab511b28 100644
+index 5c3a5823170eb..d963b8cda8968 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-@@ -134,11 +134,30 @@ enum MenuCommand {
+@@ -135,11 +135,30 @@ enum MenuCommand {
    kCloseCommand,
    kCloseOthersCommand,
    kMoveToSubmenuCommand,
@@ -58,7 +58,7 @@ index 406ad95d5d71e..e168eab511b28 100644
  class ProfileTabsWindow;
  
  std::vector<ProfileTabsWindow*>& AllWindows() {
-@@ -298,6 +317,15 @@ struct SavedTabOrder {
+@@ -299,6 +318,15 @@ struct SavedTabOrder {
    base::TimeTicks valid_until;
  };
  
@@ -74,7 +74,7 @@ index 406ad95d5d71e..e168eab511b28 100644
  NSString* TabOrderPrefsKey() {
    base::FilePath user_data_dir;
    base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
-@@ -509,6 +537,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -511,6 +539,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
        data.muted = contents->IsAudioMuted();
        tabs.push_back(std::move(data));
      }
@@ -82,7 +82,7 @@ index 406ad95d5d71e..e168eab511b28 100644
      strip_->SetTabs(tabs);
      strip_->SetUpdateVersion(plurium_update::AvailableVersion());
    }
-@@ -646,6 +675,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -648,6 +677,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
                                submenu_model_.get());
      }
      menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
@@ -91,7 +91,7 @@ index 406ad95d5d71e..e168eab511b28 100644
      menu_model_->AddItem(kCloseCommand, u"Close tab");
      menu_model_->AddItem(kCloseOthersCommand,
                           u"Close other tabs of " + menu_tab_.window->title());
-@@ -654,6 +685,24 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -656,6 +687,24 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    void UpdateButtonPressed() override { plurium_update::PromptForUpdate(); }
  
@@ -116,7 +116,7 @@ index 406ad95d5d71e..e168eab511b28 100644
    void ShowNewTabMenu(const gfx::Point& screen_point) override {
      menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
      menu_windows_.clear();
-@@ -667,7 +716,20 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -669,7 +718,20 @@ class ProfileTabsWindow : public views::WidgetObserver,
    }
  
    // ui::SimpleMenuModel::Delegate:
@@ -137,7 +137,7 @@ index 406ad95d5d71e..e168eab511b28 100644
      if (command_id >= kNewTabInWindowCommand) {
        if (ProfileTabsWindow* target =
                MenuWindow(command_id - kNewTabInWindowCommand)) {
-@@ -1006,6 +1068,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1008,6 +1070,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
    std::vector<raw_ptr<ProfileTabsWindow>> menu_windows_;
    std::unique_ptr<ui::SimpleMenuModel> menu_model_;
    std::unique_ptr<ui::SimpleMenuModel> submenu_model_;

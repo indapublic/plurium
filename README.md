@@ -102,7 +102,7 @@ Set each profile's color in *Customize Chromium → Color*.
 ## Build from source
 
 The patches apply to the stable tag of Chromium they were made for
-(currently **154.0.8037.98**):
+(currently **155.0.8059.40**):
 
 ```bash
 mkdir -p /Volumes/Workspace/chromium && cd /Volumes/Workspace/chromium
@@ -110,9 +110,9 @@ git clone https://github.com/indapublic/plurium
 git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
 export PATH="$PWD/depot_tools:$PATH"
 fetch --nohooks chromium && cd src
-git fetch origin +refs/tags/154.0.8037.98:refs/tags/154.0.8037.98
-git checkout -b profile-tabs tags/154.0.8037.98
-git am ../plurium/patches/000*.patch
+git fetch origin +refs/tags/155.0.8059.40:refs/tags/155.0.8059.40
+git checkout -b profile-tabs tags/155.0.8059.40
+git am ../plurium/patches/00*.patch
 gclient sync -D --with_branch_heads --with_tags
 gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 dcheck_always_on=false target_cpu="arm64" proprietary_codecs=true ffmpeg_branding="Chrome"'
 autoninja -C out/Release chrome

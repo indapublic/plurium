@@ -1,6 +1,6 @@
-From ab60a7ae294e4fedd948f85d9810273b6e888ca6 Mon Sep 17 00:00:00 2001
+From 86ee2cbab59b0099a959dfefe1981e6a600ed982 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
-Date: Mon, 5 Oct 2026 16:56:00 +1000
+Date: Tue, 13 Oct 2026 06:33:46 +1000
 Subject: [PATCH 05/12] Mac: Plurium branding for the profile-tabs build
 
 The build otherwise looks like a regular Chromium to macOS: same bundle
@@ -68,7 +68,7 @@ index 1d4ffd68a75da..b996529dded54 100644
 +  }
 +}
 diff --git a/chrome/BUILD.gn b/chrome/BUILD.gn
-index ce7ebbe4f6b68..6870b8fd2a554 100644
+index 8a60d7061bbfb..4cb6e41b40db7 100644
 --- a/chrome/BUILD.gn
 +++ b/chrome/BUILD.gn
 @@ -538,6 +538,7 @@ if (is_win) {
@@ -79,7 +79,7 @@ index ce7ebbe4f6b68..6870b8fd2a554 100644
      ]
  
      sources = [
-@@ -660,14 +661,23 @@ if (is_win) {
+@@ -661,14 +662,23 @@ if (is_win) {
      }
    }
  
@@ -136,7 +136,7 @@ index 6fada0a2b1a1f..c568d396e3670 100644
  	<true/>
  	<key>OSAScriptingDefinition</key>
 diff --git a/chrome/app/chromium_strings.grd b/chrome/app/chromium_strings.grd
-index d5f9a09fc06cb..0137bba708345 100644
+index bad5d6abf7910..915649d5b06d9 100644
 --- a/chrome/app/chromium_strings.grd
 +++ b/chrome/app/chromium_strings.grd
 @@ -294,10 +294,10 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->

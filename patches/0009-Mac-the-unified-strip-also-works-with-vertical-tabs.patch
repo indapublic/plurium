@@ -1,6 +1,6 @@
-From a07646931beb0bbc940ca14315eb54ec2e0328ee Mon Sep 17 00:00:00 2001
+From 8a8c8528a4d883fa0870ca6911c3aaf4b605311e Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
-Date: Tue, 6 Oct 2026 21:44:00 +1000
+Date: Tue, 13 Oct 2026 06:33:53 +1000
 Subject: [PATCH 09/12] Mac: the unified strip also works with vertical tabs
 
 With Tab position: Vertical, Chromium shows its vertical tab strip and
@@ -25,13 +25,13 @@ switching between profiles.
 The strip's context menu also lists "New tab in <profile>", and
 accessibility clients can press a tab to select it.
 ---
- .../ui/views/frame/profile_tabs_mac.mm        | 248 +++++++++++++++---
+ .../ui/views/frame/profile_tabs_mac.mm        | 250 +++++++++++++++---
  .../ui/views/frame/unified_tab_strip_mac.h    |  20 ++
  .../ui/views/frame/unified_tab_strip_mac.mm   | 213 +++++++++++++--
- 3 files changed, 421 insertions(+), 60 deletions(-)
+ 3 files changed, 422 insertions(+), 61 deletions(-)
 
 diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
-index 4bb61057947f9..b42e859c600d0 100644
+index 0056de5fc5626..697b8136030d6 100644
 --- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 +++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
 @@ -25,6 +25,7 @@
@@ -42,7 +42,7 @@ index 4bb61057947f9..b42e859c600d0 100644
  #include "base/scoped_observation.h"
  #include "base/strings/string_number_conversions.h"
  #include "base/strings/sys_string_conversions.h"
-@@ -52,13 +53,18 @@
+@@ -52,15 +53,20 @@
  #include "chrome/browser/ui/tabs/tab_strip_model.h"
  #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
  #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
@@ -57,12 +57,15 @@ index 4bb61057947f9..b42e859c600d0 100644
  #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
 +#include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
  #include "chrome/common/chrome_paths.h"
+-#import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 +#include "chrome/common/pref_names.h"
+ #include "components/favicon/content/content_favicon_util.h"
 +#include "components/prefs/pref_service.h"
- #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
++#import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
  #include "components/sessions/core/tab_restore_service.h"
  #include "components/sessions/core/tab_restore_service_observer.h"
-@@ -85,6 +91,8 @@
+ #include "components/sessions/core/tab_restore_types.h"
+@@ -86,6 +92,8 @@
  #include "ui/views/view.h"
  #include "ui/views/view_class_properties.h"
  #include "ui/views/view_observer.h"
@@ -71,7 +74,7 @@ index 4bb61057947f9..b42e859c600d0 100644
  #include "ui/views/widget/widget.h"
  #include "ui/views/widget/widget_observer.h"
  #include "ui/views/window/non_client_view.h"
-@@ -172,6 +180,15 @@ constexpr std::array<MarkStyleChoice, 6> kMarkStyleChoices = {{
+@@ -173,6 +181,15 @@ constexpr std::array<MarkStyleChoice, 6> kMarkStyleChoices = {{
  
  class ProfileTabsWindow;
  
@@ -87,7 +90,7 @@ index 4bb61057947f9..b42e859c600d0 100644
  std::vector<ProfileTabsWindow*>& AllWindows() {
    static base::NoDestructor<std::vector<ProfileTabsWindow*>> windows;
    return *windows;
-@@ -485,6 +502,16 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -486,6 +503,16 @@ class ProfileTabsWindow : public views::WidgetObserver,
      // into fullscreen at the next launch. Don't let it until the window has
      // joined the group (or Chromium itself asks for fullscreen).
      SetCanBeFullscreenPrimary(false);
@@ -104,7 +107,7 @@ index 4bb61057947f9..b42e859c600d0 100644
    }
    ProfileTabsWindow(const ProfileTabsWindow&) = delete;
    ProfileTabsWindow& operator=(const ProfileTabsWindow&) = delete;
-@@ -640,13 +667,21 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -642,13 +669,21 @@ class ProfileTabsWindow : public views::WidgetObserver,
      LayoutStrip();
    }
  
@@ -128,7 +131,7 @@ index 4bb61057947f9..b42e859c600d0 100644
    // Immersive fullscreen moves Chromium's tab strip to an overlay widget and
    // back.
    void OnViewAddedToWidget(views::View* observed_view) override {
-@@ -659,9 +694,10 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -661,9 +696,10 @@ class ProfileTabsWindow : public views::WidgetObserver,
        strip_observation_.Reset();
        strip_ = nullptr;
        strip_visible_ = false;
@@ -141,7 +144,7 @@ index 4bb61057947f9..b42e859c600d0 100644
    }
  
    // TabStripModelObserver:
-@@ -799,8 +835,11 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -801,8 +837,11 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    void UpdateButtonPressed() override { plurium_update::PromptForUpdate(); }
  
@@ -153,7 +156,7 @@ index 4bb61057947f9..b42e859c600d0 100644
      AddMarkStyleSubmenu();
      RunMenu(screen_point);
    }
-@@ -819,6 +858,12 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -821,6 +860,12 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    void ShowNewTabMenu(const gfx::Point& screen_point) override {
      menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
@@ -166,7 +169,7 @@ index 4bb61057947f9..b42e859c600d0 100644
      menu_windows_.clear();
      for (ProfileTabsWindow* window : GroupWindowsInOrder()) {
        menu_model_->AddItemWithIcon(
-@@ -826,7 +871,6 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -828,7 +873,6 @@ class ProfileTabsWindow : public views::WidgetObserver,
            u"New tab in " + window->title(), ProfileAvatar(window->profile()));
        menu_windows_.push_back(window);
      }
@@ -174,7 +177,7 @@ index 4bb61057947f9..b42e859c600d0 100644
    }
  
    // ui::SimpleMenuModel::Delegate:
-@@ -1015,27 +1059,77 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1017,27 +1061,77 @@ class ProfileTabsWindow : public views::WidgetObserver,
              << top_inset_;
    }
  
@@ -243,7 +246,7 @@ index 4bb61057947f9..b42e859c600d0 100644
 +    }
 +    for (views::View* view : targets) {
 +      SetViewHidden(view, true, VerticalTabs());
-+    }
+     }
 +    hidden_views_.assign(targets.begin(), targets.end());
 +  }
 +
@@ -254,7 +257,7 @@ index 4bb61057947f9..b42e859c600d0 100644
 +    if (!view->layer()) {
 +      view->SetPaintToLayer();
 +      view->layer()->SetFillsBoundsOpaquely(false);
-     }
++    }
 +    view->layer()->SetOpacity(hidden ? 0.0f : 1.0f);
 +    view->SetCanProcessEventsWithinSubtree(!hidden);
 +    static base::NoDestructor<NoHitsTargeterDelegate> no_hits;
@@ -269,7 +272,7 @@ index 4bb61057947f9..b42e859c600d0 100644
    }
  
    void ShowStrip(bool show) {
-@@ -1050,7 +1144,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1052,7 +1146,8 @@ class ProfileTabsWindow : public views::WidgetObserver,
        return;
      }
      strip_visible_ = show;
@@ -279,7 +282,7 @@ index 4bb61057947f9..b42e859c600d0 100644
      strip_->SetVisible(show);
      if (show) {
        PlaceStrip();
-@@ -1062,9 +1157,14 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1064,9 +1159,14 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    // The unified tab strip lives in the frame view, which handles its
    // non-client hit testing, or next to Chromium's tab strip while immersive
@@ -295,7 +298,7 @@ index 4bb61057947f9..b42e859c600d0 100644
      if (region && region->parent() && region->GetWidget() &&
          region->GetWidget() != widget_) {
        return region->parent();
-@@ -1076,6 +1176,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1078,6 +1178,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
      if (!strip_) {
        return;
      }
@@ -305,7 +308,7 @@ index 4bb61057947f9..b42e859c600d0 100644
      views::View* parent = StripParent();
      if (strip_->parent() != parent) {
        parent->AddChildView(strip_->parent()->RemoveChildViewT(strip_.get()));
-@@ -1083,22 +1186,86 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1085,22 +1188,86 @@ class ProfileTabsWindow : public views::WidgetObserver,
      LayoutStrip();
    }
  
@@ -399,7 +402,7 @@ index 4bb61057947f9..b42e859c600d0 100644
    }
  
    void Attach() {
-@@ -1144,6 +1311,15 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1146,6 +1313,15 @@ class ProfileTabsWindow : public views::WidgetObserver,
        VLOG(1) << "profile tabs: first window " << base::UTF16ToUTF8(title_);
        return;
      }
@@ -415,7 +418,7 @@ index 4bb61057947f9..b42e859c600d0 100644
      // Append to the end of the group so window positions stay stable. Keep
      // the current selection unless this window was activated (e.g. session
      // restore and focused:false windows must not steal focus).
-@@ -1189,8 +1365,12 @@ class ProfileTabsWindow : public views::WidgetObserver,
+@@ -1191,8 +1367,12 @@ class ProfileTabsWindow : public views::WidgetObserver,
  
    base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
        this};
