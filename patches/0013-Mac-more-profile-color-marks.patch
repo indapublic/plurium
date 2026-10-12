@@ -1,7 +1,7 @@
 From 7c84d5de22e819e829ed20f62248f3cca1ae8636 Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 13 Oct 2026 08:27:48 +1000
-Subject: [PATCH 13/13] Mac: more profile color marks
+Subject: [PATCH 13/14] Mac: more profile color marks
 
 Profile Color now also offers marks that fill the tab (a tinted
 background, an outline, a fade from the leading edge, a title in the

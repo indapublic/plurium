@@ -1,0 +1,75 @@
+From 7937167b0ee8ae9bb101363aa19d5714f6a60ed8 Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Tue, 13 Oct 2026 09:24:51 +1000
+Subject: [PATCH 14/14] Open Link As: no new tab page next to the link
+
+When the target profile had no window, Open Link As opened one the
+usual way, with its startup tabs (a new tab page), and added the link
+next to them. Now such a profile gets a new window with just the link.
+A profile with a window gets the link in it as before, and a locked
+profile still shows the profile picker.
+---
+ .../render_view_context_menu.cc               | 40 +++++++++++++++++--
+ 1 file changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/chrome/browser/renderer_context_menu/render_view_context_menu.cc b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+index 1a4de31b32cc5..25333d6f3ff0d 100644
+--- a/chrome/browser/renderer_context_menu/render_view_context_menu.cc
++++ b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+@@ -858,6 +858,40 @@ void OnBrowserCreated(const GURL& link_url,
+   }
+ }
+ 
++// A profile without a window gets a new window with just the link: a window
++// opened for the profile the usual way would come with its startup tabs (a
++// new tab page) next to the link. Otherwise as before: the link opens in the
++// profile's window, or the profile picker shows for a locked profile.
++void OpenLinkInLoadedProfile(const GURL& link_url,
++                             url::Origin initiator_origin,
++                             Profile* profile) {
++  ProfileAttributesEntry* entry =
++      g_browser_process->profile_manager()
++          ->GetProfileAttributesStorage()
++          .GetProfileAttributesWithPath(profile->GetPath());
++  const bool incognito_forced =
++      IncognitoModePrefs::GetAvailability(profile->GetPrefs()) ==
++      policy::IncognitoModeAvailability::kForced;
++  if ((entry && entry->IsSigninRequired()) || incognito_forced ||
++      ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser(
++          /*match_original_profiles=*/false)) {
++    profiles::OpenBrowserWindowForProfile(
++        base::BindOnce(OnBrowserCreated, link_url, initiator_origin),
++        /*always_create=*/false, /*is_new_profile=*/false,
++        /*open_command_line_urls=*/false, profile);
++    return;
++  }
++
++  NavigateParams nav_params(profile, link_url, ui::PAGE_TRANSITION_TYPED);
++  nav_params.initiator_origin = initiator_origin;
++  nav_params.disposition = WindowOpenDisposition::NEW_WINDOW;
++  nav_params.referrer = content::Referrer();
++  nav_params.window_action = NavigateParams::WindowAction::kShowWindow;
++  if (auto navigation_handle = Navigate(&nav_params)) {
++    AttachContextMenuOpenLinkNavigationHandleUserData(*navigation_handle);
++  }
++}
++
+ bool DoesFormControlTypeSupportEmoji(
+     blink::mojom::FormControlType form_control_type) {
+   switch (form_control_type) {
+@@ -4943,9 +4977,9 @@ void RenderViewContextMenu::ExecOpenLinkInProfile(int profile_index) {
+   DCHECK_LE(profile_index, static_cast<int>(profile_link_paths_.size()));
+ 
+   base::FilePath profile_path = profile_link_paths_[profile_index];
+-  profiles::SwitchToProfile(
+-      profile_path, false,
+-      base::BindOnce(OnBrowserCreated, params_.link_url, params_.frame_origin));
++  profiles::LoadProfileAsync(
++      profile_path, base::BindOnce(OpenLinkInLoadedProfile, params_.link_url,
++                                   params_.frame_origin));
+ }
+ 
+ #if BUILDFLAG(ENABLE_COMPOSE)
+-- 
+2.56.0
+

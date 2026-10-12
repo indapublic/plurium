@@ -142,6 +142,7 @@ it never mixes with the installed Plurium. The detailed guide
 | `0011` | Pinned tabs in the unified strip |
 | `0012` | Tab groups in the unified strip |
 | `0013` | More profile color marks (tint, outline, fade, title, dot, badge, ring, initial) |
+| `0014` | Open Link As opens just the link, without a new tab page, in a profile with no window |
 
 Releases are made with `tools/release.sh` (Chromium's signing scripts,
 notarization, DMG, cask bump).

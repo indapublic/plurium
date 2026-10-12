@@ -1,7 +1,7 @@
 From a7d08b82db832827361e5fa245684e49ec9e11cd Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Tue, 13 Oct 2026 06:33:58 +1000
-Subject: [PATCH 12/13] Mac: tab groups in the unified strip
+Subject: [PATCH 12/14] Mac: tab groups in the unified strip
 
 The tab menu's group items work now. A group belongs to the window of its
 profile, and its tabs stay together in the unified strip: a header chip

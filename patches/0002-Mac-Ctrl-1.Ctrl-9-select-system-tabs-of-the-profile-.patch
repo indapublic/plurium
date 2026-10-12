@@ -1,7 +1,7 @@
 From f808f63b0a77c7a38254dc6c3531b8d47ee373ae Mon Sep 17 00:00:00 2001
 From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
 Date: Mon, 5 Oct 2026 07:47:42 +1000
-Subject: [PATCH 02/13] Mac: Ctrl+1...Ctrl+9 select system tabs of the profile
+Subject: [PATCH 02/14] Mac: Ctrl+1...Ctrl+9 select system tabs of the profile
  tab group
 
 A local NSEvent monitor selects the N-th system tab of the profile tab
