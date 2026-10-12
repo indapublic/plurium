@@ -45,8 +45,10 @@ The app is signed with a Developer ID and notarized by Apple.
 - One tab strip with the tabs of all profiles, drawn the same way, with a
   line in the profile color along the top of each tab (the same strip with a
   single window). Right-click a tab or the strip → **Profile Color** for other
-  marks: a corner triangle, a line below, a bar on the side, a corner outline
-  or none.
+  marks: a corner triangle, a line below, a bar on the side, a corner outline;
+  a tinted background, an outline, a fade from the edge, a colored title; a
+  dot, a badge on the favicon, a ring around it, the profile's initial; or
+  none.
   Click to switch (profiles switch as needed), drag to reorder anywhere,
   middle-click or × to close.
 - Right-click a tab for Chromium's own tab menu (New Tab to the Right, Reload,
@@ -139,6 +141,7 @@ it never mixes with the installed Plurium. The detailed guide
 | `0010` | Chromium's tab menu in the unified strip |
 | `0011` | Pinned tabs in the unified strip |
 | `0012` | Tab groups in the unified strip |
+| `0013` | More profile color marks (tint, outline, fade, title, dot, badge, ring, initial) |
 
 Releases are made with `tools/release.sh` (Chromium's signing scripts,
 notarization, DMG, cask bump).

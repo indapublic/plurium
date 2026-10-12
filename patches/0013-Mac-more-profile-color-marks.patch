@@ -1,0 +1,462 @@
+From 7c84d5de22e819e829ed20f62248f3cca1ae8636 Mon Sep 17 00:00:00 2001
+From: Vasilii Zolotukhin <vasilii.zolotukhin@gmail.com>
+Date: Tue, 13 Oct 2026 08:27:48 +1000
+Subject: [PATCH 13/13] Mac: more profile color marks
+
+Profile Color now also offers marks that fill the tab (a tinted
+background, an outline, a fade from the leading edge, a title in the
+profile color) and marks next to the favicon (a dot, a badge on its
+corner, a ring around it, the profile's initial). Icon-only tabs show the
+badge for the dot and the initial. The menu groups the styles with
+separators; new styles are appended to ProfileMarkStyle, so saved
+choices keep their meaning.
+---
+ .../ui/views/frame/profile_tabs_mac.mm        |  30 ++-
+ .../ui/views/frame/unified_tab_strip_mac.h    |  12 +-
+ .../ui/views/frame/unified_tab_strip_mac.mm   | 231 +++++++++++++++++-
+ 3 files changed, 259 insertions(+), 14 deletions(-)
+
+diff --git a/chrome/browser/ui/views/frame/profile_tabs_mac.mm b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+index 8bf8750465216..c1a0e7d7aba29 100644
+--- a/chrome/browser/ui/views/frame/profile_tabs_mac.mm
++++ b/chrome/browser/ui/views/frame/profile_tabs_mac.mm
+@@ -195,14 +195,24 @@ NSString* const kMarkStyleKey = @"ProfileMarkStyle";
+ struct MarkStyleChoice {
+   ProfileMarkStyle style;
+   const char16_t* label;
++  bool separator_before = false;
+ };
+-constexpr std::array<MarkStyleChoice, 6> kMarkStyleChoices = {{
++// Lines, marks that fill the tab, marks next to the favicon, none.
++constexpr std::array<MarkStyleChoice, 14> kMarkStyleChoices = {{
+     {ProfileMarkStyle::kTopLine, u"Line on Top"},
+     {ProfileMarkStyle::kTriangle, u"Corner Triangle"},
+     {ProfileMarkStyle::kBottomLine, u"Line Below"},
+     {ProfileMarkStyle::kSideBar, u"Bar on the Side"},
+     {ProfileMarkStyle::kCorner, u"Corner Outline"},
+-    {ProfileMarkStyle::kNone, u"None"},
++    {ProfileMarkStyle::kTint, u"Tinted Background", true},
++    {ProfileMarkStyle::kOutline, u"Outline"},
++    {ProfileMarkStyle::kFade, u"Fade from the Edge"},
++    {ProfileMarkStyle::kColoredTitle, u"Colored Title"},
++    {ProfileMarkStyle::kDot, u"Dot", true},
++    {ProfileMarkStyle::kIconBadge, u"Icon Badge"},
++    {ProfileMarkStyle::kIconRing, u"Icon Ring"},
++    {ProfileMarkStyle::kInitial, u"Profile Initial"},
++    {ProfileMarkStyle::kNone, u"None", true},
+ }};
+ 
+ class ProfileTabsWindow;
+@@ -259,6 +269,18 @@ std::u16string ProfileDisplayName(Profile* profile) {
+   return name;
+ }
+ 
++// The first letter of the profile's name, for ProfileMarkStyle::kInitial.
++std::u16string ProfileInitial(Profile* profile) {
++  NSString* name = base::SysUTF16ToNSString(
++      ProfileDisplayName(profile->GetOriginalProfile()));
++  if (name.length == 0) {
++    return std::u16string();
++  }
++  NSString* first = [name
++      substringWithRange:[name rangeOfComposedCharacterSequenceAtIndex:0]];
++  return base::SysNSStringToUTF16(first.localizedUppercaseString);
++}
++
+ ui::ImageModel ProfileAvatar(Profile* profile) {
+   if (!profile->IsOffTheRecord() && !profile->IsGuestSession()) {
+     if (ProfileManager* manager = g_browser_process->profile_manager()) {
+@@ -675,6 +697,7 @@ class ProfileTabsWindow : public views::WidgetObserver,
+       data.favicon = favicon.IsEmpty() ? favicon::GetDefaultFaviconModel()
+                                        : ui::ImageModel::FromImage(favicon);
+       data.profile_color = ProfileColor(slot.window->profile());
++      data.profile_initial = ProfileInitial(slot.window->profile());
+       data.selected = slot.window == this && slot.tab == active;
+       data.loading = contents->IsLoading();
+       data.audible = contents->IsCurrentlyAudible();
+@@ -1005,6 +1028,9 @@ class ProfileTabsWindow : public views::WidgetObserver,
+   ui::SimpleMenuModel* MarkStyleMenu() {
+     mark_style_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+     for (const MarkStyleChoice& choice : kMarkStyleChoices) {
++      if (choice.separator_before) {
++        mark_style_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
++      }
+       mark_style_menu_model_->AddRadioItem(
+           kMarkStyleCommand + static_cast<int>(choice.style), choice.label,
+           /*group_id=*/0);
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+index edfdc89b7933c..c1bd1103e0318 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.h
+@@ -38,7 +38,15 @@ enum class ProfileMarkStyle {
+   kSideBar = 3,     // Short bar at the leading edge.
+   kCorner = 4,      // Bracket along the top-left corner.
+   kNone = 5,
+-  kMaxValue = kNone,
++  kTint = 6,          // The whole tab in a light wash.
++  kOutline = 7,       // Thin frame around the tab.
++  kFade = 8,          // Wash at the leading edge, fading out.
++  kColoredTitle = 9,  // The title in the profile color.
++  kDot = 10,          // Small dot before the favicon.
++  kIconBadge = 11,    // Dot on the favicon's bottom-right corner.
++  kIconRing = 12,     // Rounded frame around the favicon.
++  kInitial = 13,      // The profile's initial in a chip before the favicon.
++  kMaxValue = kInitial,
+ };
+ 
+ // What the unified tab strip shows for one tab.
+@@ -48,6 +56,8 @@ struct UnifiedTabData {
+   ui::ImageModel favicon;
+   // The tab's profile color, shown as the strip's ProfileMarkStyle says.
+   SkColor profile_color = SK_ColorTRANSPARENT;
++  // First letter of the profile's name, for ProfileMarkStyle::kInitial.
++  std::u16string profile_initial;
+   // The active tab of the window showing the strip.
+   bool selected = false;
+   bool loading = false;
+diff --git a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+index 9dbfba6ab5ea7..07369d35d5e11 100644
+--- a/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
++++ b/chrome/browser/ui/views/frame/unified_tab_strip_mac.mm
+@@ -10,6 +10,7 @@
+ #include "base/functional/bind.h"
+ #include "base/logging.h"
+ #include "cc/paint/paint_flags.h"
++#include "cc/paint/paint_shader.h"
+ #include "chrome/app/vector_icons/vector_icons.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "components/vector_icons/vector_icons.h"
+@@ -17,6 +18,7 @@
+ #include "third_party/skia/include/core/SkPathBuilder.h"
+ #include "third_party/skia/include/core/SkRRect.h"
+ #include "third_party/skia/include/core/SkRect.h"
++#include "third_party/skia/include/core/SkTileMode.h"
+ #include "ui/accessibility/ax_action_data.h"
+ #include "ui/accessibility/ax_enums.mojom.h"
+ #include "ui/base/hit_test.h"
+@@ -29,7 +31,9 @@
+ #include "ui/gfx/color_utils.h"
+ #include "ui/gfx/font.h"
+ #include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/rect_conversions.h"
+ #include "ui/gfx/geometry/rect_f.h"
++#include "ui/gfx/geometry/skia_conversions.h"
+ #include "ui/gfx/scoped_canvas.h"
+ #include "ui/gfx/text_constants.h"
+ #include "ui/views/accessibility/view_accessibility.h"
+@@ -64,6 +68,22 @@ constexpr float kMarkBottomInset = 4;
+ constexpr float kMarkSideInset = 4;
+ constexpr float kMarkSideHeight = 16;
+ constexpr float kMarkCornerLength = 14;
++constexpr SkAlpha kMarkTintAlpha = 0x2E;
++constexpr SkAlpha kMarkTintSelectedAlpha = 0x40;
++constexpr float kMarkOutlineWidth = 1.5f;
++constexpr SkAlpha kMarkFadeAlpha = 0x5C;
++// Part of the tab's width the fade covers.
++constexpr float kMarkFadeExtent = 0.6f;
++constexpr int kMarkDotSize = 6;
++constexpr int kMarkInitialSize = 16;
++// Between a leading dot or initial and the favicon.
++constexpr int kMarkLeadingSpacing = 6;
++// The badge on the favicon's corner, with a ring in the tab's background.
++constexpr int kMarkBadgeSize = 10;
++constexpr float kMarkBadgeRing = 1.5f;
++constexpr int kMarkRingOutset = 3;
++constexpr float kMarkRingWidth = 2;
++constexpr float kMarkRingRadius = 6;
+ constexpr int kHoverBottomInset = 4;
+ constexpr int kSeparatorHeight = 16;
+ constexpr int kNewTabButtonSize = 28;
+@@ -96,6 +116,44 @@ constexpr int kVerticalGroupChipInset = 6;
+ 
+ }  // namespace
+ 
++// A dot over the favicon's bottom-right corner: ProfileMarkStyle::kIconBadge,
++// and kDot and kInitial on icon-only tabs. A child of its tab so it is drawn
++// over the favicon.
++class IconBadgeView : public views::View {
++  METADATA_HEADER(IconBadgeView, views::View)
++
++ public:
++  IconBadgeView() { SetCanProcessEventsWithinSubtree(false); }
++
++  // The ring, in the tab's background color, sets the dot off the favicon.
++  void SetColors(SkColor color, SkColor ring) {
++    if (color != color_ || ring != ring_) {
++      color_ = color;
++      ring_ = ring;
++      SchedulePaint();
++    }
++  }
++
++  // views::View:
++  void OnPaint(gfx::Canvas* canvas) override {
++    cc::PaintFlags flags;
++    flags.setAntiAlias(true);
++    const gfx::PointF center = gfx::RectF(GetLocalBounds()).CenterPoint();
++    const float radius = width() / 2.0f;
++    flags.setColor(ring_);
++    canvas->DrawCircle(center, radius, flags);
++    flags.setColor(color_);
++    canvas->DrawCircle(center, radius - kMarkBadgeRing, flags);
++  }
++
++ private:
++  SkColor color_ = SK_ColorTRANSPARENT;
++  SkColor ring_ = SK_ColorTRANSPARENT;
++};
++
++BEGIN_METADATA(IconBadgeView)
++END_METADATA
++
+ // One tab. Mouse presses go to the strip (which handles activation and
+ // dragging); only the close button handles its own clicks.
+ class UnifiedTabView : public views::View {
+@@ -111,6 +169,8 @@ class UnifiedTabView : public views::View {
+     throbber_ = AddChildView(std::make_unique<views::Throbber>());
+     throbber_->SetCanProcessEventsWithinSubtree(false);
+     throbber_->SetVisible(false);
++    badge_ = AddChildView(std::make_unique<IconBadgeView>());
++    badge_->SetVisible(false);
+ 
+     // Same setup as Chrome's tab titles.
+     title_ = AddChildView(std::make_unique<views::Label>());
+@@ -181,14 +241,18 @@ class UnifiedTabView : public views::View {
+   // Horizontal tabs leave room above them; vertical rows fill their bounds.
+   int TopInset() const { return strip_->vertical() ? 0 : kTabTopInset; }
+ 
++  // The strip's ProfileMarkStyle changed.
++  void OnMarkStyleChanged() {
++    UpdateColors();
++    DeprecatedLayoutImmediately();
++    SchedulePaint();
++  }
++
+   // views::View:
+   void Layout(PassKey) override {
+-    const int center_y = TopInset() + (height() - TopInset()) / 2;
+-    // Collapsed vertical tabs show just the icon, like Chromium's.
+-    const bool narrow =
+-        data_.pinned || width() < (strip_->vertical() ? kVerticalTabNarrowWidth
+-                                                      : kTabNarrowWidth);
+-    int left = kTabPadding;
++    const int center_y = CenterY();
++    const bool narrow = IconOnly();
++    int left = kTabPadding + (narrow ? 0 : LeadingMarkWidth());
+     int right = width() - kTabPadding;
+ 
+     const bool show_close =
+@@ -216,6 +280,21 @@ class UnifiedTabView : public views::View {
+     icon_->SetVisible(!data_.loading);
+     throbber_->SetVisible(data_.loading);
+ 
++    const ProfileMarkStyle style = strip_->mark_style();
++    const bool show_badge = SkColorGetA(data_.profile_color) &&
++                            GetColorProvider() &&
++                            (style == ProfileMarkStyle::kIconBadge ||
++                             (narrow && (style == ProfileMarkStyle::kDot ||
++                                         style == ProfileMarkStyle::kInitial)));
++    badge_->SetVisible(show_badge);
++    if (show_badge) {
++      // Centered a pixel inside the favicon's corner.
++      badge_->SetBounds(icon_bounds.right() - 1 - kMarkBadgeSize / 2,
++                        icon_bounds.bottom() - 1 - kMarkBadgeSize / 2,
++                        kMarkBadgeSize, kMarkBadgeSize);
++      badge_->SetColors(data_.profile_color, BackgroundColor());
++    }
++
+     title_->SetVisible(!narrow);
+     if (!narrow) {
+       const int title_x = left + kIconSize + kIconTitleSpacing;
+@@ -341,11 +420,75 @@ class UnifiedTabView : public views::View {
+         canvas->DrawPath(corner.detach(), mark);
+         break;
+       }
++      case ProfileMarkStyle::kTint:
++        mark.setColor(SkColorSetA(
++            data_.profile_color,
++            data_.selected ? kMarkTintSelectedAlpha : kMarkTintAlpha));
++        canvas->DrawPath(TabShape(0), mark);
++        break;
++      case ProfileMarkStyle::kOutline:
++        mark.setStyle(cc::PaintFlags::kStroke_Style);
++        mark.setStrokeWidth(kMarkOutlineWidth);
++        canvas->DrawPath(TabShape(kMarkOutlineWidth / 2), mark);
++        break;
++      case ProfileMarkStyle::kFade: {
++        const gfx::RectF rect = TabRect();
++        const SkPoint points[] = {
++            {rect.x(), 0}, {rect.x() + rect.width() * kMarkFadeExtent, 0}};
++        const SkColor4f colors[] = {SkColor4f::FromColor(SkColorSetA(
++                                        data_.profile_color, kMarkFadeAlpha)),
++                                    SkColors::kTransparent};
++        mark.setShader(cc::PaintShader::MakeLinearGradient(
++            points, colors, nullptr, 2, SkTileMode::kClamp));
++        canvas->DrawPath(TabShape(0), mark);
++        break;
++      }
++      case ProfileMarkStyle::kDot:
++        // Icon-only tabs show the badge instead.
++        if (!IconOnly()) {
++          canvas->DrawCircle(
++              gfx::PointF(kTabPadding + kMarkDotSize / 2.0f, CenterY()),
++              kMarkDotSize / 2.0f, mark);
++        }
++        break;
++      case ProfileMarkStyle::kInitial:
++        if (!IconOnly()) {
++          PaintInitial(canvas, mark);
++        }
++        break;
++      case ProfileMarkStyle::kIconRing: {
++        mark.setStyle(cc::PaintFlags::kStroke_Style);
++        mark.setStrokeWidth(kMarkRingWidth);
++        gfx::RectF ring(icon_->bounds());
++        ring.Outset(kMarkRingOutset - kMarkRingWidth / 2);
++        canvas->DrawRoundRect(ring, kMarkRingRadius, mark);
++        break;
++      }
++      case ProfileMarkStyle::kColoredTitle:
++      case ProfileMarkStyle::kIconBadge:
++        // The title's color and the badge view.
++        break;
+       case ProfileMarkStyle::kNone:
+         break;
+     }
+   }
+ 
++  void PaintInitial(gfx::Canvas* canvas, const cc::PaintFlags& mark) {
++    const gfx::RectF chip(kTabPadding, CenterY() - kMarkInitialSize / 2.0f,
++                          kMarkInitialSize, kMarkInitialSize);
++    canvas->DrawCircle(chip.CenterPoint(), kMarkInitialSize / 2.0f, mark);
++    if (data_.profile_initial.empty()) {
++      return;
++    }
++    const gfx::FontList font =
++        title_->font_list().DeriveWithSizeDelta(-3).DeriveWithWeight(
++            gfx::Font::Weight::SEMIBOLD);
++    canvas->DrawStringRectWithFlags(
++        data_.profile_initial, font,
++        color_utils::GetColorWithMaxContrast(data_.profile_color),
++        gfx::ToEnclosingRect(chip), gfx::Canvas::TEXT_ALIGN_CENTER);
++  }
++
+   void OnThemeChanged() override {
+     views::View::OnThemeChanged();
+     UpdateColors();
+@@ -359,6 +502,61 @@ class UnifiedTabView : public views::View {
+   }
+ 
+  private:
++  int CenterY() const { return TopInset() + (height() - TopInset()) / 2; }
++
++  // Pinned tabs, narrow ones and collapsed vertical rows (like Chromium's)
++  // show just the icon.
++  bool IconOnly() const {
++    return data_.pinned ||
++           width() <
++               (strip_->vertical() ? kVerticalTabNarrowWidth : kTabNarrowWidth);
++  }
++
++  // Room for a mark before the favicon.
++  int LeadingMarkWidth() const {
++    if (strip_->mark_style() == ProfileMarkStyle::kDot) {
++      return kMarkDotSize + kMarkLeadingSpacing;
++    }
++    if (strip_->mark_style() == ProfileMarkStyle::kInitial) {
++      return kMarkInitialSize + kMarkLeadingSpacing;
++    }
++    return 0;
++  }
++
++  // The tab's own shape: the active tab's runs into the toolbar below it (the
++  // view's bounds cut off its bottom), the others are the hover highlight's
++  // pill; vertical rows are rounded all around.
++  gfx::RectF TabRect() const {
++    if (strip_->vertical()) {
++      return gfx::RectF(GetLocalBounds());
++    }
++    if (data_.selected) {
++      return gfx::RectF(0, kTabTopInset, width(),
++                        height() - kTabTopInset + kCornerRadius);
++    }
++    return gfx::RectF(2, kTabTopInset, width() - 4,
++                      height() - kTabTopInset - kHoverBottomInset + 1);
++  }
++
++  SkPath TabShape(float inset) const {
++    gfx::RectF rect = TabRect();
++    rect.Inset(inset);
++    return SkPath::RRect(SkRRect::MakeRectXY(gfx::RectFToSkRect(rect),
++                                             kCornerRadius - inset,
++                                             kCornerRadius - inset));
++  }
++
++  // What the tab's background shows, for colors drawn on it.
++  SkColor BackgroundColor() const {
++    const ui::ColorProvider* colors = GetColorProvider();
++    if (data_.selected) {
++      return colors->GetColor(kColorTabBackgroundActiveFrameActive);
++    }
++    return colors->GetColor(hovered_
++                                ? kColorTabBackgroundInactiveHoverFrameActive
++                                : kColorTabBackgroundInactiveFrameActive);
++  }
++
+   ui::ColorId ForegroundColorId() const {
+     return data_.selected ? kColorTabForegroundActiveFrameActive
+                           : kColorTabForegroundInactiveFrameActive;
+@@ -368,7 +566,14 @@ class UnifiedTabView : public views::View {
+     if (!GetColorProvider()) {
+       return;
+     }
+-    title_->SetEnabledColor(GetColorProvider()->GetColor(ForegroundColorId()));
++    SkColor title_color = GetColorProvider()->GetColor(ForegroundColorId());
++    if (strip_->mark_style() == ProfileMarkStyle::kColoredTitle &&
++        SkColorGetA(data_.profile_color)) {
++      title_color = color_utils::BlendForMinContrast(data_.profile_color,
++                                                     BackgroundColor())
++                        .color;
++    }
++    title_->SetEnabledColor(title_color);
+     close_->SetImageModel(
+         views::Button::STATE_NORMAL,
+         ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+@@ -395,6 +600,7 @@ class UnifiedTabView : public views::View {
+   bool show_separator_ = false;
+   raw_ptr<views::ImageView> icon_ = nullptr;
+   raw_ptr<views::Throbber> throbber_ = nullptr;
++  raw_ptr<IconBadgeView> badge_ = nullptr;
+   raw_ptr<views::Label> title_ = nullptr;
+   raw_ptr<views::ImageView> audio_ = nullptr;
+   raw_ptr<views::ImageButton> close_ = nullptr;
+@@ -1034,11 +1240,14 @@ int UnifiedTabStrip::LayoutItems() {
+ void UnifiedTabStrip::LayoutHorizontal() {
+   const int end = LayoutItems();
+   // Separators between tabs, but not next to the active or a hovered tab, a
+-  // group header, nor right before a profile mark at the leading edge, which
+-  // divides the tabs already.
++  // group header, nor right before a profile mark at the leading edge or one
++  // that fills the tab, which divide the tabs already.
+   const bool leading_marks = mark_style_ == ProfileMarkStyle::kTriangle ||
+                              mark_style_ == ProfileMarkStyle::kSideBar ||
+-                             mark_style_ == ProfileMarkStyle::kCorner;
++                             mark_style_ == ProfileMarkStyle::kCorner ||
++                             mark_style_ == ProfileMarkStyle::kTint ||
++                             mark_style_ == ProfileMarkStyle::kOutline ||
++                             mark_style_ == ProfileMarkStyle::kFade;
+   const auto quiet = [&](int index) {
+     return !tabs_[index]->data().selected && !tabs_[index]->hovered();
+   };
+@@ -1146,7 +1355,7 @@ void UnifiedTabStrip::SetMarkStyle(ProfileMarkStyle style) {
+   mark_style_ = style;
+   DeprecatedLayoutImmediately();
+   for (UnifiedTabView* tab : tabs_) {
+-    tab->SchedulePaint();
++    tab->OnMarkStyleChanged();
+   }
+ }
+ 
+-- 
+2.56.0
+
