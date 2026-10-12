@@ -86,8 +86,12 @@ mkdir -p "$WORK"
 step "Sign the app (Chromium's own signing scripts)"
 # Chromium's pipeline keeps a notarized app only inside its own packaging, so
 # it just signs here and the notarization follows below.
-python3 "$REPO_DIR/tools/sign.py" "$OUT/Chromium Packaging" --input "$OUT" \
-  --output "$WORK/signed" --identity "$IDENTITY" --disable-packaging
+sign_app() {
+  rm -rf "$WORK/signed"
+  python3 "$REPO_DIR/tools/sign.py" "$OUT/Chromium Packaging" --input "$OUT" \
+    --output "$WORK/signed" --identity "$IDENTITY" --disable-packaging
+}
+retry sign_app
 APP=$(find "$WORK/signed" -maxdepth 3 -name Chromium.app -type d | head -1)
 [ -n "$APP" ] || { echo "Signed Chromium.app not found in $WORK/signed"; exit 1; }
 codesign --verify --deep --strict "$APP"
