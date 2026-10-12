@@ -258,6 +258,15 @@ autoninja -C out/Release chrome
 git format-patch "tags/$NEW" -o ../plurium/patches/   # обновить патчи
 ```
 
+То же ночью одним скриптом (fetch, rebase, sync и сборка `out/Release` через
+`night2.sh`; при конфликте ребейз отменяется, старая ветка остаётся как
+`profile-tabs-<старая версия>`, `STABLE_VERSION` обновляется сам):
+
+```bash
+cd /Volumes/Workspace/chromium && nohup caffeinate -ims bash plurium/tools/night-rebase.sh <NEW> \
+  </dev/null >> logs/night-rebase.log 2>&1 &
+```
+
 Где ожидать конфликтов:
 
 - **`chrome/browser/ui/BUILD.gn`.** На `main` файл `browser_native_widget_mac.mm`
