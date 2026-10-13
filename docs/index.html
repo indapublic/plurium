@@ -179,6 +179,33 @@ h1 {
 .tab .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab .x { flex: none; width: 16px; text-align: center; font-size: 15px; line-height: 1; opacity: 0; }
 .tab[aria-selected="true"] .x { opacity: .7; }
+/* Profile marks, as in Plurium's Profile Color menu (data-mark on a container). */
+.lead { display: none; flex: none; }
+[data-mark="triangle"] .tab { overflow: hidden; }
+[data-mark="triangle"] .tab::before { left: 0; right: auto; width: 13px; height: 13px; border-radius: 0; clip-path: polygon(0 0, 100% 0, 0 100%); }
+[data-mark="bottom"] .tab::before { top: auto; bottom: 4px; left: 10px; right: 10px; border-radius: 2px; }
+[data-mark="side"] .tab::before { left: 4px; right: auto; top: 50%; width: 3px; height: 16px; margin-top: -8px; border-radius: 2px; }
+[data-mark="corner"] .tab::before { left: 0; right: auto; width: 12px; height: 12px; background: none; border: solid var(--c); border-width: 3px 0 0 3px; border-radius: 9px 0 0 0; }
+[data-mark="outline"] .tab::before { inset: 1px 2px 4px; height: auto; background: none; border: 1.5px solid var(--c); border-radius: 8px; }
+[data-mark="outline"] .tab[aria-selected="true"]::before { inset: 0 0 -2px; border-bottom: 0; border-radius: 9px 9px 0 0; }
+[data-mark="tint"] .tab { background: color-mix(in srgb, var(--c) 18%, transparent); }
+[data-mark="tint"] .tab[aria-selected="true"] { background: color-mix(in srgb, var(--c) 26%, var(--toolbar)); }
+[data-mark="fade"] .tab { background: linear-gradient(90deg, color-mix(in srgb, var(--c) 38%, transparent), transparent 60%); }
+[data-mark="fade"] .tab[aria-selected="true"] { background: linear-gradient(90deg, color-mix(in srgb, var(--c) 38%, transparent), transparent 60%), var(--toolbar); }
+[data-mark="title"] .tab .t { color: color-mix(in srgb, var(--c) 72%, var(--tab-text)); font-weight: 600; }
+[data-mark="dot"] .lead { display: block; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+[data-mark="initial"] .lead { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--c); color: #fff; font-size: 10px; font-weight: 700; }
+[data-mark="initial"] .lead::after { content: attr(data-i); }
+[data-mark="badge"] .fav::before { content: ""; position: absolute; right: -5px; bottom: -5px; width: 7px; height: 7px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 1.5px var(--frame); }
+[data-mark="badge"] .tab[aria-selected="true"] .fav::before { box-shadow: 0 0 0 1.5px var(--toolbar); }
+[data-mark="badge"] .fav, [data-mark="ring"] .fav { opacity: 1; }
+[data-mark="ring"] .fav { outline: 2px solid var(--c); outline-offset: 2px; margin: 0 4px 0 3px; }
+[data-mark="badge"] .fav { margin-right: 3px; }
+[data-mark="tint"] .tab::before, [data-mark="fade"] .tab::before, [data-mark="title"] .tab::before, [data-mark="dot"] .tab::before,
+[data-mark="initial"] .tab::before, [data-mark="badge"] .tab::before, [data-mark="ring"] .tab::before, [data-mark="none"] .tab::before { display: none; }
+/* Marks at the leading edge or filling the tab divide the tabs already. */
+[data-mark="triangle"] .tab::after, [data-mark="side"] .tab::after, [data-mark="corner"] .tab::after,
+[data-mark="tint"] .tab::after, [data-mark="outline"] .tab::after, [data-mark="fade"] .tab::after { display: none; }
 .newtab { flex: none; align-self: center; padding: 0 10px; font-size: 20px; color: var(--tab-text); opacity: .8; }
 .toolbar { display: flex; align-items: center; gap: 4px; height: 44px; padding: 0 10px; background: var(--toolbar); border-bottom: 1px solid var(--frame-border); }
 .toolbar svg { width: 30px; height: 30px; padding: 6px; flex: none; stroke: var(--icon); fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -234,6 +261,22 @@ h1 {
   .split .img { height: 90px; }
 }
 @media (max-width: 440px) { .fav { display: none; } }
+
+/* Mark gallery */
+.mark-group { font-size: 15px; font-weight: 650; color: var(--muted); margin: 34px 0 14px; letter-spacing: .01em; }
+.mark-group:first-of-type { margin-top: 0; }
+.mark-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 14px; }
+.mark-card { margin: 0; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--bg-soft); }
+.mwin { margin: 14px 14px 0; border-radius: 9px 9px 0 0; overflow: hidden; border: 1px solid var(--frame-border); border-bottom: 0; }
+.mwin .strip { height: 38px; padding: 0 6px; }
+.mwin .tab { height: 31px; max-width: none; padding: 0 8px; gap: 6px; font-size: 12px; cursor: default; }
+.mwin .tab:hover { background: transparent; }
+.mwin .tab[aria-selected="true"]:hover { background: var(--toolbar); }
+.mwin .fav { display: block; width: 13px; height: 13px; }
+.mbar { height: 12px; background: var(--toolbar); }
+@media (max-width: 440px) { .mwin .tab:nth-child(4) { display: none; } }
+.mark-card figcaption { padding: 12px 16px 14px; font-weight: 600; font-size: 15px; border-top: 1px solid var(--line); background: var(--bg); }
+.mark-note { color: var(--muted); font-size: 15px; margin: 16px 0 0; }
 
 /* Sections */
 section { padding: 96px 0 0; }
@@ -333,6 +376,7 @@ footer a { color: var(--muted); }
     <a class="brand" href="./"><img src="icon.png" alt="" width="30" height="30">Plurium</a>
     <nav>
       <a class="opt" href="#features">Features</a>
+      <a class="opt" href="#marks">Tab marks</a>
       <a class="opt" href="#limits">Limitations</a>
       <a href="#install">Install</a>
       <a href="https://github.com/indapublic/plurium">GitHub</a>
@@ -356,15 +400,15 @@ footer a { color: var(--muted); }
     </div>
 
     <div class="demo">
-      <div class="browser" id="demo">
+      <div class="browser" id="demo" data-mark="top">
         <div class="strip" role="tablist" aria-label="Tabs of four profiles in one strip">
           <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
-          <button class="tab" role="tab" aria-selected="true" style="--c: var(--work)" data-p="work" data-url="mail.company.example" data-kind="mail"><span class="fav"></span><span class="t">Inbox</span><span class="x" aria-hidden="true">×</span></button>
-          <button class="tab" role="tab" aria-selected="false" style="--c: var(--personal)" data-p="personal" data-url="photos.example/albums" data-kind="tiles"><span class="fav"></span><span class="t">Photos</span><span class="x" aria-hidden="true">×</span></button>
-          <button class="tab" role="tab" aria-selected="false" style="--c: var(--work)" data-p="work" data-url="docs.company.example/q4-roadmap" data-kind="doc"><span class="fav"></span><span class="t">Q4 roadmap</span><span class="x" aria-hidden="true">×</span></button>
-          <button class="tab" role="tab" aria-selected="false" style="--c: var(--client)" data-p="client" data-url="portal.acme.example" data-kind="cards"><span class="fav"></span><span class="t">Acme portal</span><span class="x" aria-hidden="true">×</span></button>
-          <button class="tab" role="tab" aria-selected="false" style="--c: var(--side)" data-p="side" data-url="dash.myproject.example" data-kind="bars"><span class="fav"></span><span class="t">Dashboard</span><span class="x" aria-hidden="true">×</span></button>
-          <button class="tab" role="tab" aria-selected="false" style="--c: var(--personal)" data-p="personal" data-url="recipes.example/tomato-soup" data-kind="recipe"><span class="fav"></span><span class="t">Tomato soup</span><span class="x" aria-hidden="true">×</span></button>
+          <button class="tab" role="tab" aria-selected="true" style="--c: var(--work)" data-p="work" data-url="mail.company.example" data-kind="mail"><span class="lead" data-i="W"></span><span class="fav"></span><span class="t">Inbox</span><span class="x" aria-hidden="true">×</span></button>
+          <button class="tab" role="tab" aria-selected="false" style="--c: var(--personal)" data-p="personal" data-url="photos.example/albums" data-kind="tiles"><span class="lead" data-i="P"></span><span class="fav"></span><span class="t">Photos</span><span class="x" aria-hidden="true">×</span></button>
+          <button class="tab" role="tab" aria-selected="false" style="--c: var(--work)" data-p="work" data-url="docs.company.example/q4-roadmap" data-kind="doc"><span class="lead" data-i="W"></span><span class="fav"></span><span class="t">Q4 roadmap</span><span class="x" aria-hidden="true">×</span></button>
+          <button class="tab" role="tab" aria-selected="false" style="--c: var(--client)" data-p="client" data-url="portal.acme.example" data-kind="cards"><span class="lead" data-i="C"></span><span class="fav"></span><span class="t">Acme portal</span><span class="x" aria-hidden="true">×</span></button>
+          <button class="tab" role="tab" aria-selected="false" style="--c: var(--side)" data-p="side" data-url="dash.myproject.example" data-kind="bars"><span class="lead" data-i="S"></span><span class="fav"></span><span class="t">Dashboard</span><span class="x" aria-hidden="true">×</span></button>
+          <button class="tab" role="tab" aria-selected="false" style="--c: var(--personal)" data-p="personal" data-url="recipes.example/tomato-soup" data-kind="recipe"><span class="lead" data-i="P"></span><span class="fav"></span><span class="t">Tomato soup</span><span class="x" aria-hidden="true">×</span></button>
           <span class="newtab" aria-hidden="true">+</span>
         </div>
         <div class="toolbar" aria-hidden="true">
@@ -404,9 +448,17 @@ footer a { color: var(--muted); }
           <div class="stage" aria-hidden="true">
             <div class="mini solo"><div class="mini-strip"><b style="--c: var(--work)"></b><b class="on" style="--c: var(--personal)"></b><b style="--c: var(--work)"></b><b style="--c: var(--client)"></b><b style="--c: var(--personal)"></b><b style="--c: var(--client)"></b><b style="--c: var(--work)"></b><b style="--c: var(--client)"></b></div><div class="mini-body" style="height:132px"><div class="bar"></div><i class="sk" style="width:90%"></i><i class="sk" style="width:76%"></i><i class="sk" style="width:84%"></i><i class="sk" style="width:48%"></i></div></div>
           </div>
-          <figcaption><strong>Plurium</strong>One window and one strip. A line in each profile's color shows whose tab it is.</figcaption>
+          <figcaption><strong>Plurium</strong>One window and one strip. A mark in each profile's color shows whose tab it is.</figcaption>
         </figure>
       </div>
+    </section>
+
+    <section id="marks">
+      <h2>Pick how a tab shows its profile</h2>
+      <p class="sub">Right-click the tab strip and choose <em>Profile Color</em>. Thirteen marks in three groups, or none at all. The choice applies to every window.</p>
+      <div id="mark-gallery"></div>
+      <noscript><p class="mark-note">Line on Top, Corner Triangle, Line Below, Bar on the Side, Corner Outline; Tinted Background, Outline, Fade from the Edge, Colored Title; Dot, Icon Badge, Icon Ring, Profile Initial; None.</p></noscript>
+      <p class="mark-note">On pinned and narrow tabs that show just the icon, the dot and the initial become the badge.</p>
     </section>
 
     <section id="features">
@@ -419,7 +471,7 @@ footer a { color: var(--muted); }
         </div>
         <div class="feature" style="--c: var(--personal)">
           <h3>Any order you like</h3>
-          <p>Drag tabs anywhere in the strip, across profiles. The order survives restarts. The profile mark can be a line, a corner, a tinted tab, a dot, the profile's initial and more, or nothing.</p>
+          <p>Drag tabs anywhere in the strip, across profiles. The order survives restarts. The profile mark can be <a href="#marks">any of 13 styles</a>, or nothing.</p>
         </div>
         <div class="feature" style="--c: var(--side)">
           <h3>Chrome's shortcuts, across profiles</h3>
@@ -639,6 +691,27 @@ brew install --cask indapublic/plurium/plurium</code></pre>
     } else {
       timer = setInterval(tick, 2600);
     }
+  }
+
+  // The mark gallery, grouped like the Profile Color menu.
+  var MARK_GROUPS = [
+    ['Lines and corners', [['top', 'Line on Top'], ['triangle', 'Corner Triangle'], ['bottom', 'Line Below'], ['side', 'Bar on the Side'], ['corner', 'Corner Outline']]],
+    ['The whole tab', [['tint', 'Tinted Background'], ['outline', 'Outline'], ['fade', 'Fade from the Edge'], ['title', 'Colored Title']]],
+    ['Next to the icon', [['dot', 'Dot'], ['badge', 'Icon Badge'], ['ring', 'Icon Ring'], ['initial', 'Profile Initial']]]
+  ];
+  var MINI_TABS = [['work', 'W', 'Inbox'], ['personal', 'P', 'Photos', true], ['client', 'C', 'Acme'], ['side', 'S', 'Stats']];
+  var gallery = document.getElementById('mark-gallery');
+  if (gallery) {
+    var strip = MINI_TABS.map(function (t) {
+      return '<span class="tab" style="--c: var(--' + t[0] + ')"' + (t[3] ? ' aria-selected="true"' : '') + '>' +
+        '<span class="lead" data-i="' + t[1] + '"></span><span class="fav"></span><span class="t">' + t[2] + '</span></span>';
+    }).join('');
+    gallery.innerHTML = MARK_GROUPS.map(function (group) {
+      return '<h3 class="mark-group">' + group[0] + '</h3><div class="mark-grid">' + group[1].map(function (mark) {
+        return '<figure class="mark-card"><div class="mwin" data-mark="' + mark[0] + '" aria-hidden="true"><div class="strip">' + strip +
+          '</div><div class="mbar"></div></div><figcaption>' + mark[1] + '</figcaption></figure>';
+      }).join('') + '</div>';
+    }).join('');
   }
 
   // Copy buttons.
